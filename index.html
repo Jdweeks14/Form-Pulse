@@ -1,0 +1,1115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Form Pulse</title>
+<meta name="theme-color" content="#07080a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Form Pulse">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<style>
+  :root { --font-anthropic-sans: Inter, -apple-system, system-ui, sans-serif; --font-anthropic-serif: "Source Serif 4", Georgia, serif;
+    --cds-radius: 0; --cds-dur-slow: .3s; color-scheme: dark; }
+  html, body { margin: 0; background: #07080a; color: #f2f4f7; -webkit-text-size-adjust: 100%; }
+  body { min-height: 100vh; min-height: 100dvh; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  .rb { min-height: 100vh; min-height: 100dvh; }
+  html.fp-lock, html.fp-lock body { overflow: hidden; }
+  /* login */
+  .lg { position: fixed; inset: 0; z-index: 10000; display: grid; place-items: center; padding: 1.25rem;
+    background: radial-gradient(90% 70% at 50% 40%, #141a08 0%, #07080a 70%); font-family: var(--font-anthropic-sans); }
+  .lg[hidden] { display: none; }
+  .lg form { width: 100%; max-width: 22rem; display: grid; gap: .8rem; }
+  .lg h1 { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: 2.2rem; letter-spacing: .12em; text-transform: uppercase; margin: 0 0 .6rem; text-align: center; }
+  .lg h1 span { color: #c6f432; }
+  .lg input { font: inherit; font-size: 16px; padding: .85rem 1rem; border-radius: .7rem; border: 1px solid #24282f; background: #111316; color: #f2f4f7; }
+  .lg input:focus { outline: 2px solid #c6f432; outline-offset: 1px; }
+  .lg button { font: inherit; font-weight: 600; padding: .85rem 1rem; border: 0; border-radius: .7rem; background: #c6f432; color: #07080a; cursor: pointer; }
+  .lg button:disabled { opacity: .6; }
+  .lg p { margin: 0; min-height: 1.2em; color: #f87171; font-size: .9rem; text-align: center; }
+  .lg small { color: #8b929e; text-align: center; font-size: .8rem; line-height: 1.5; }
+  .signout { position: fixed; right: max(.75rem, env(safe-area-inset-right)); bottom: calc(.6rem + env(safe-area-inset-bottom)); z-index: 50;
+    font: 500 .72rem var(--font-anthropic-sans); color: #8b929e; background: #111316; border: 1px solid #24282f; border-radius: 99px; padding: .35rem .7rem; cursor: pointer; }
+  @media (max-width: 760px) { .signout { display: none; } }
+</style>
+</head>
+<body>
+<div class="lg" id="login" hidden>
+  <form id="login-form">
+    <h1>Form <span>Pulse</span></h1>
+    <input id="lg-email" type="email" autocomplete="username" placeholder="Email" required>
+    <input id="lg-pass" type="password" autocomplete="current-password" placeholder="Password" required>
+    <button id="lg-go" type="submit">Sign in</button>
+    <p id="lg-msg" role="alert"></p>
+    <small>On iPhone: open in Safari, tap Share, then "Add to Home Screen".</small>
+  </form>
+</div>
+<script>
+// ---- Supabase-backed stand-in for the claude.ai dashboard runtime (dash.calc / dash.data / dash.onData) ----
+window.dash = (() => {
+  const RAW = ['picks', 'runners', 'results', 'history'];
+  const raw = {}, calcs = {}, subs = [];
+  let status = 'loading';
+  const api = {
+    calc(id, def) { calcs[id] = def; },
+    data(id) {
+      if (status !== 'ok') return { status, data: [] };
+      if (calcs[id]) {
+        try { return { status: 'ok', data: calcs[id].fn(...calcs[id].inputs.map((i) => raw[i] || [])) }; }
+        catch (e) { console.error(id, e); return { status: 'error', data: [] }; }
+      }
+      return { status: 'ok', data: raw[id] || [] };
+    },
+    onData(fn) { subs.push(fn); },
+    setLink(v) { try { history.replaceState(null, '', '#' + v); } catch (e) {} },
+    _set(rows) { rows.forEach((r) => { if (RAW.includes(r.name)) raw[r.name] = Array.isArray(r.data) ? r.data : []; }); status = 'ok'; subs.forEach((f) => f()); },
+    _fail() { status = 'error'; subs.forEach((f) => f()); },
+  };
+  return api;
+})();
+
+(() => {
+  const cfg = window.RACEBOT || {};
+  const login = document.getElementById('login');
+  if (!cfg.supabaseUrl || !window.supabase) { dash._fail(); return; }
+  const sb = supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, { auth: { persistSession: true, autoRefreshToken: true } });
+  let live = null;
+  const load = async () => {
+    const r = await sb.from('snapshots').select('name,data,updated_at');
+    if (r.error) { console.error(r.error); return; }
+    dash._set(r.data);
+  };
+  const start = async () => {
+    login.hidden = true;
+    document.getElementById('signout').hidden = false;
+    await load();
+    if (!live) live = sb.channel('snaps').on('postgres_changes', { event: '*', schema: 'public', table: 'snapshots' }, () => load()).subscribe();
+  };
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && login.hidden) load(); });
+  setInterval(() => { if (login.hidden) load(); }, 120000);
+  document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('lg-go'), msg = document.getElementById('lg-msg');
+    btn.disabled = true; msg.textContent = '';
+    const r = await sb.auth.signInWithPassword({ email: document.getElementById('lg-email').value.trim(), password: document.getElementById('lg-pass').value });
+    btn.disabled = false;
+    if (r.error) { msg.textContent = r.error.message; return; }
+    start();
+  });
+  window.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('signout').addEventListener('click', async () => { await sb.auth.signOut(); location.reload(); });
+  });
+  sb.auth.getSession().then(({ data }) => {
+    if (data.session) start();
+    else { dash._fail(); login.hidden = false; }
+  });
+})();
+</script>
+<button class="signout" id="signout" hidden>Sign out</button>
+<style>
+  /* Racebot - navy racecard app (phone) + analytics board (laptop). Single dark theme, explicit colors. */
+  #dash-root { --dash-gutter: 0; }
+  .rb {
+    --bg: #07080a; --panel: #111316; --panel2: #1a1d22; --line: #24282f; --fg: #f2f4f7; --muted: #8b929e;
+    --blue: #c6f432; --blue-soft: rgba(198,244,50,.10); --lime: #c6f432; --lime-soft: rgba(198,244,50,.12);
+    --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --score: #c6f432;
+    container-type: inline-size; background: var(--bg); color: var(--fg); font-family: var(--font-anthropic-sans);
+    border-radius: var(--cds-radius); overflow: hidden; color-scheme: dark; min-height: 40rem;
+  }
+  .rb * { box-sizing: border-box; }
+  .rb-shell { display: block; min-height: 40rem; }
+  .rb-topnav { display: flex; align-items: center; gap: 1.5rem; padding: .85rem 1.5rem; border-bottom: 1px solid var(--line); background: #0b0c0f; flex-wrap: wrap; }
+  .rb-topnav .rb-logo { padding: 0; }
+  .rb-tabs { display: flex; gap: 1.4rem; flex: 1; min-width: 0; overflow-x: auto; }
+  .rb-tabs .rb-nav { padding: .45rem 0; border-radius: 0; background: none; box-shadow: none; border-bottom: 2px solid transparent; white-space: nowrap; }
+  .rb-tabs .rb-nav:hover { background: none; }
+  .rb-tabs .rb-nav[aria-current="page"] { background: none; box-shadow: none; color: var(--fg); border-bottom-color: var(--lime); }
+  .rb-side { background: #0b0c0f; border-right: 1px solid var(--line); padding: 1.25rem .75rem; display: flex; flex-direction: column; gap: .25rem; }
+  .rb-logo { display: flex; align-items: center; gap: .6rem; padding: 0 .5rem 1.25rem; }
+  .rb-logo b { font-weight: 600; font-size: 1.15rem; letter-spacing: .01em; }
+  .rb-logo i { width: 1.9rem; height: 1.9rem; display: grid; place-items: center; font-style: normal; color: var(--lime); }
+  .rb-logo i svg { width: 100%; height: 100%; }
+  .rb-nav { appearance: none; border: 0; background: none; color: var(--muted); font: inherit; font-size: .92rem; text-align: left;
+    display: flex; align-items: center; gap: .65rem; padding: .6rem .7rem; border-radius: .6rem; cursor: pointer; }
+  .rb-nav:hover { color: var(--fg); background: var(--panel); }
+  .rb-nav[aria-current="page"] { color: var(--fg); background: var(--blue-soft); box-shadow: inset 3px 0 0 var(--blue); }
+  .rb-nav:focus-visible, .rb button:focus-visible, .rb select:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+  .rb-nav svg { width: 1.1rem; height: 1.1rem; flex: none; }
+  .rb-side .foot { margin-top: auto; font-size: .72rem; color: var(--muted); padding: .5rem; line-height: 1.45; }
+  .rb-main { min-width: 0; display: flex; flex-direction: column; }
+  .rb-top { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .rb-top h1 { margin: 0; font-size: 1.15rem; font-weight: 500; }
+  .rb-top .sub { color: var(--muted); font-size: .8rem; margin-top: .15rem; }
+  .rb-chip { display: inline-flex; align-items: center; gap: .45rem; padding: .35rem .75rem; border-radius: 999px; font-size: .75rem; letter-spacing: .06em;
+    text-transform: uppercase; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .rb-chip.live { color: var(--lime); border-color: var(--lime); }
+  .rb-chip.live i { width: .45rem; height: .45rem; border-radius: 50%; background: var(--lime); }
+  @media (prefers-reduced-motion: no-preference) { .rb-chip.live i { animation: rbp 1.8s ease-in-out infinite; } }
+  @keyframes rbp { 50% { opacity: .3; } }
+  .rb-view { padding: 1.25rem 1.5rem 2rem; display: flex; flex-direction: column; gap: 1rem; }
+  .rb-view[hidden] { display: none; }
+  .rb-banner { background: var(--lime-soft); border: 1px solid var(--line); color: var(--fg); padding: .6rem .9rem; border-radius: .7rem; font-size: .85rem; }
+  .rb-grid { display: grid; gap: 1rem; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+  .rb-card { background: var(--panel); border: 1px solid var(--line); border-radius: 1rem; padding: 1.1rem 1.2rem; min-width: 0;
+    box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 12px 30px rgba(0,0,0,.35); }
+  .rb-card h2::before { }
+  .rb-card h2 { margin: 0; font-size: .95rem; font-weight: 500; display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
+  .rb-card h2 small { font-size: .72rem; color: var(--muted); font-weight: 400; }
+  .rb-card .note { font-size: .75rem; color: var(--muted); margin: .25rem 0 .9rem; }
+  .c-next { grid-column: span 7; } .c-up { grid-column: span 5; }
+  .c-ai { grid-column: span 4; } .c-field { grid-column: span 4; } .c-rec { grid-column: span 4; }
+  .c-strip { grid-column: span 12; }
+  .eyebrow { font-size: .7rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .lime { color: var(--lime); }
+  .num { font-family: var(--font-anthropic-serif); font-weight: 400; font-variant-numeric: tabular-nums; }
+  /* next off */
+  .nx-top { display: flex; justify-content: space-between; gap: 1rem; align-items: center; flex-wrap: wrap; }
+  .nx-race { font-size: .9rem; letter-spacing: .04em; }
+  .nx-race b { font-weight: 500; }
+  .nx-when { text-align: right; }
+  .nx-when .num { font-size: 1.6rem; }
+  .nx-when div:last-child { font-size: .75rem; color: var(--lime); }
+  .nx-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1.25rem; align-items: center; margin-top: 1.1rem; }
+  .nx-horse { font-family: var(--font-anthropic-serif); font-size: 2rem; line-height: 1.05; text-transform: uppercase; letter-spacing: .02em; overflow-wrap: anywhere; }
+  .nx-horse small { font-family: var(--font-anthropic-sans); font-size: .95rem; color: var(--muted); margin-right: .4rem; vertical-align: middle; }
+  .nx-people { color: var(--muted); font-size: .82rem; margin-top: .4rem; }
+  .ring { width: 7.5rem; height: 7.5rem; position: relative; }
+  .ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .ring .lab { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
+  .ring .lab .num { font-size: 2.2rem; line-height: 1; }
+  .ring .lab small { display: block; font-size: .65rem; color: var(--muted); letter-spacing: .1em; }
+  .nx-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); gap: .75rem; margin-top: 1.1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+  .nx-facts div span { display: block; }
+  .nx-facts b { font-weight: 500; font-size: .95rem; font-variant-numeric: tabular-nums; }
+  .form { display: flex; gap: .3rem; flex-wrap: wrap; margin-top: .35rem; }
+  .form span { min-width: 2.3rem; text-align: center; padding: .1rem .35rem; border-radius: .4rem; background: var(--panel2); font-size: .75rem; font-variant-numeric: tabular-nums; }
+  .form span.w { background: var(--lime); color: #07080a; font-weight: 600; }
+  .why { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .3rem 1rem; margin: .9rem 0 0; padding: 0; list-style: none; font-size: .85rem; }
+  .why li::before { content: "✓"; color: var(--lime); margin-right: .45rem; font-weight: 600; }
+  /* pills */
+  .pill { display: inline-block; padding: .12rem .55rem; border-radius: 999px; font-size: .7rem; letter-spacing: .05em; font-weight: 600; white-space: nowrap; border: 1px solid currentColor; }
+  .pill.HIGH { color: var(--lime); } .pill.MEDIUM { color: var(--warn); } .pill.SKIP { color: var(--bad); }
+  .pill.WON { color: #07080a; background: var(--ok); border-color: var(--ok); } .pill.placed { color: var(--warn); } .pill.lost { color: var(--bad); }
+  .pill.wait { color: var(--muted); }
+  /* upcoming list */
+  .up { display: flex; flex-direction: column; }
+  .up-row { display: grid; grid-template-columns: 3.2rem minmax(0, 1fr) auto; gap: .75rem; align-items: center; padding: .6rem 0; border-top: 1px solid var(--line); }
+  .up-row:first-child { border-top: 0; }
+  .up-row.past { opacity: .55; }
+  .up-row .t { font-variant-numeric: tabular-nums; font-size: .85rem; }
+  .up-row .h { min-width: 0; }
+  .up-row .h b { display: block; font-weight: 500; font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .up-row .h span { font-size: .75rem; color: var(--muted); }
+  .odds { display: flex; gap: .35rem; }
+  .odds span { background: var(--panel2); border-radius: .45rem; padding: .25rem .45rem; font-size: .75rem; text-align: center; min-width: 2.9rem; font-variant-numeric: tabular-nums; }
+  .odds span small { display: block; font-size: .6rem; color: var(--muted); letter-spacing: .06em; }
+  .odds span.hl { background: var(--lime-soft); color: var(--lime); }
+  /* bars */
+  .bars { display: flex; flex-direction: column; gap: .55rem; }
+  .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem .75rem; align-items: center; font-size: .82rem; }
+  .bar-row .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar-row .v { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar-row .tr { grid-column: 1 / -1; height: .4rem; border-radius: 999px; background: var(--panel2); overflow: hidden; }
+  .bar-row .tr i { display: block; height: 100%; border-radius: 999px; background: #5b616b; }
+  .bar-row.top .tr i { background: var(--lime); }
+  .ai-big { font-size: 3.2rem; line-height: 1; color: var(--lime); margin: .4rem 0 .2rem; }
+  .meter { height: .45rem; border-radius: 999px; background: var(--panel2); overflow: hidden; margin-top: .6rem; }
+  .meter i { display: block; height: 100%; background: var(--lime); border-radius: 999px; }
+  .rec-big { display: flex; gap: 1.5rem; align-items: baseline; margin: .3rem 0 .8rem; flex-wrap: wrap; }
+  .rec-big .num { font-size: 2.4rem; }
+  .chart { position: relative; }
+  .tip { position: absolute; pointer-events: none; background: #0b0c0f; border: 1px solid var(--line); border-radius: .5rem; padding: .3rem .5rem; font-size: .75rem; white-space: nowrap; }
+  .tip .d { color: var(--muted); }
+  .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr)); gap: 1rem; }
+  .strip .rb-card { background: var(--panel); }
+  .strip-title { font-size: .78rem; letter-spacing: .12em; text-transform: uppercase; color: var(--lime); font-weight: 600; margin: .4rem 0 .6rem; }
+  .strip h3 { margin: 0 0 .5rem; font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; color: var(--lime); font-weight: 600; }
+  .meet { display: flex; justify-content: space-between; gap: .5rem; padding: .45rem 0; border-top: 1px solid var(--line); font-size: .85rem; }
+  .meet:first-of-type { border-top: 0; }
+  .meet button { appearance: none; background: none; border: 0; color: var(--fg); font: inherit; cursor: pointer; padding: 0; text-align: left; }
+  .meet button:hover { color: var(--lime); }
+  .meet span { color: var(--muted); font-size: .78rem; }
+  /* racecards */
+  .rc-bar { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+  .btn { appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: inherit; font-size: .8rem; letter-spacing: .05em;
+    text-transform: uppercase; padding: .45rem .85rem; border-radius: .6rem; cursor: pointer; display: inline-flex; align-items: center; gap: .4rem; }
+  .btn.primary { background: var(--lime); border-color: var(--lime); color: #07080a; font-weight: 600; }
+  .btn[aria-pressed="true"] { background: var(--lime); border-color: var(--lime); color: #07080a; font-weight: 600; }
+  .rc-tabs { display: flex; gap: .35rem; overflow-x: auto; padding-bottom: .2rem; }
+  .rc-tabs .btn { padding: .35rem .65rem; flex: none; }
+  .rc-tabs .btn.clear { border-color: var(--lime); }
+  .rc-head { border-radius: .9rem; padding: 1.4rem 1.2rem; text-align: center;
+    background: radial-gradient(120% 160% at 50% 0%, #1d2410 0%, #121418 55%, #0b0c0f 100%); border: 1px solid var(--line); }
+  .rc-head .num { font-size: 1.9rem; }
+  .rc-head p { margin: .35rem 0 0; color: #c9ced8; font-size: .85rem; }
+  .rc-head .meta { color: var(--muted); font-size: .78rem; margin-top: .35rem; letter-spacing: .04em; }
+  .rc-head .tag { margin-top: .7rem; }
+  .runners { display: flex; flex-direction: column; gap: .6rem; }
+  .runner { display: grid; grid-template-columns: minmax(0, 1fr) 4.2rem 4.4rem repeat(4, 3.6rem); background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: .8rem; overflow: hidden; }
+  .runner.clear { box-shadow: 0 0 0 2px var(--lime); }
+  .runner .who { padding: .65rem .8rem; min-width: 0; font-size: .78rem; line-height: 1.45; }
+  .runner .who b { display: block; font-size: .92rem; text-transform: uppercase; letter-spacing: .02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .runner .who span { color: var(--muted); }
+  .runner .sc { display: grid; place-items: center; font-family: var(--font-anthropic-serif); font-size: 1.5rem; background: var(--panel2); color: var(--lime); font-variant-numeric: tabular-nums; }
+  .runner .sc small { display: block; font-family: var(--font-anthropic-sans); font-size: .62rem; color: var(--muted); text-align: center; }
+  .runner .pr { display: grid; place-items: center; text-align: center; font-variant-numeric: tabular-nums; font-size: 1rem; font-weight: 600; border-left: 1px solid var(--line); background: var(--panel); }
+  .runner .pr small { display: block; font-size: .62rem; color: var(--muted); font-weight: 400; }
+  .runner .ar { display: grid; place-items: center; font-variant-numeric: tabular-nums; font-size: .9rem; border-left: 1px solid var(--line); background: var(--panel); }
+  .rh { display: grid; grid-template-columns: minmax(0, 1fr) 4.2rem 4.4rem repeat(4, 3.6rem); font-size: .7rem; letter-spacing: .04em; text-transform: uppercase; }
+  .rh span { padding: .35rem .2rem; text-align: center; background: var(--panel2); color: var(--muted); }
+  .rh span:first-child { background: none; text-align: left; color: var(--muted); }
+  .rh span.s { background: var(--lime); color: #07080a; font-weight: 600; }
+  .rh span:nth-child(2) { border-radius: .45rem 0 0 0; } .rh span:last-child { border-radius: 0 .45rem 0 0; }
+  /* tables */
+  .tbl-wrap { overflow: auto; max-height: 36rem; }
+  .rb table { width: 100%; border-collapse: collapse; font-size: .85rem; font-variant-numeric: tabular-nums; }
+  .rb th { text-align: left; font-weight: 500; font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: .5rem .6rem;
+    border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); white-space: nowrap; }
+  .rb td { padding: .6rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  .rb td.n, .rb th.n { text-align: right; }
+  .u-up { color: var(--ok); font-weight: 600; } .u-dn { color: var(--bad); }
+  .rb tr.past td { color: var(--muted); }
+  .rb .empty { color: var(--muted); font-size: .85rem; padding: .75rem 0; }
+  /* bottom tab bar (phone) */
+  .rb-tabbar { display: none; }
+  @container (max-width: 980px) {
+    .c-next, .c-up { grid-column: span 12; } .c-ai, .c-field, .c-rec { grid-column: span 6; } .c-rec { grid-column: span 12; }
+  }
+  @container (max-width: 760px) {
+    .rb-tabs { display: none; }
+    .rb-topnav { padding: .75rem 1rem; }
+    .rb-top { padding: 1rem; }
+    .rb-view { padding: 1rem 1rem 5.5rem; }
+    .c-ai, .c-field { grid-column: span 12; }
+    .nx-body { grid-template-columns: 1fr; }
+    .nx-horse { font-size: 1.6rem; }
+    .ring { width: 6rem; height: 6rem; }
+    .runner, .rh { grid-template-columns: minmax(0, 1fr) 3.4rem 3.8rem repeat(2, 3rem); }
+    .runner .ar.x, .rh span.x { display: none; }
+    .rh span:nth-child(5) { border-radius: 0 .45rem 0 0; }
+    .rb-tabbar { display: grid; grid-template-columns: repeat(4, 1fr); position: sticky; bottom: 0; z-index: 2;
+      background: #0b0c0f; border-top: 1px solid var(--line); padding: .4rem .5rem calc(.4rem + env(safe-area-inset-bottom, 0px)); }
+    .rb-tabbar button { appearance: none; background: none; border: 0; color: var(--muted); font: inherit; font-size: .68rem; display: flex; flex-direction: column;
+      align-items: center; gap: .2rem; padding: .35rem 0; cursor: pointer; }
+    .rb-tabbar button[aria-current="page"] { color: var(--lime); }
+    .rb-tabbar svg { width: 1.25rem; height: 1.25rem; }
+    .hn { display: none; }
+  }
+  /* overview v2 */
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: 1rem; }
+  .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 1rem; padding: 1rem 1.2rem; display: flex; flex-direction: column; gap: .3rem; min-width: 0; }
+  .kpi .num { font-size: 2.3rem; line-height: 1.05; }
+  .k-sub { font-size: .75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ab { display: flex; gap: 1.6rem; align-items: baseline; }
+  .ab b { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: 1.9rem; line-height: 1.05; font-variant-numeric: tabular-nums; display: block; }
+  .ab small { display: block; font-size: .72rem; color: var(--muted); }
+  .pos { color: var(--ok); } .neg { color: var(--bad); }
+  .c-half { grid-column: span 6; } .c-third { grid-column: span 4; }
+  .mv { display: inline-flex; align-items: center; gap: .4rem; font-variant-numeric: tabular-nums; }
+  .mv.firm { color: var(--ok); } .mv.drift { color: var(--warn); } .mv.flat { color: var(--muted); }
+  .mv svg { flex: none; }
+  .odds span.firm { color: var(--ok); } .odds span.drift { color: var(--warn); }
+  .bar-row .tr { position: relative; overflow: visible; }
+  .bar-row .tr b { position: absolute; top: -.25rem; bottom: -.25rem; width: 2px; background: var(--fg); border-radius: 1px; }
+  .card-tot { display: flex; gap: 1.2rem; flex-wrap: wrap; font-size: .8rem; color: var(--muted); margin: .35rem 0 .6rem; }
+  .card-tot b { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .chart .ax text { fill: var(--muted); font-size: 10px; }
+  .chart .ax line { stroke: var(--line); }
+  .chart .ax path { display: none; }
+  @container (max-width: 980px) { .c-half { grid-column: span 12; } .c-third { grid-column: span 6; } }
+  @container (max-width: 760px) { .c-third { grid-column: span 12; } }
+  [data-dash-source-state=empty] { color: transparent; }
+  [data-dash-source-state=refreshing] { opacity: .5; transition: opacity var(--cds-dur-slow); }
+  /* ===== Form Pulse loading screen ===== */
+  .fp-splash { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; height: 100dvh; z-index: 9999; background: radial-gradient(90% 70% at 50% 45%, #141a08 0%, #07080a 70%); display: grid; place-items: center;
+    color: #f2f4f7; font-family: var(--font-anthropic-sans); transition: opacity .6s ease, visibility .6s ease; overflow: hidden; }
+  .fp-splash.out { opacity: 0; visibility: hidden; }
+  html.fp-lock, html.fp-lock body { overflow: hidden; }
+  html.fp-lock .rb { min-height: 100vh; }
+  .fp-splash .grid { position: absolute; inset: -50%; background-image: linear-gradient(rgba(198,244,50,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(198,244,50,.05) 1px, transparent 1px);
+    background-size: 44px 44px; transform: perspective(600px) rotateX(55deg); transform-origin: 50% 60%; }
+  .fp-in { position: relative; width: min(34rem, 90vw); text-align: center; }
+  .fp-ecg { width: 100%; height: 6.5rem; display: block; overflow: visible; }
+  .fp-ecg path { fill: none; stroke: #c6f432; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; filter: drop-shadow(0 0 6px rgba(198,244,50,.8)); }
+  .fp-ecg .ghost { stroke: rgba(198,244,50,.12); filter: none; }
+  .fp-word { font-family: var(--font-anthropic-serif); font-size: clamp(2.6rem, 10vw, 4.4rem); letter-spacing: .14em; line-height: 1; margin-top: .6rem; text-transform: uppercase; white-space: nowrap; }
+  .fp-word span { display: inline-block; }
+  .fp-word .p { color: #c6f432; text-shadow: 0 0 24px rgba(198,244,50,.45); }
+  .fp-tag { margin-top: 1rem; font-size: .75rem; letter-spacing: .3em; text-transform: uppercase; color: #8b929e; min-height: 1.2em; }
+  .fp-bar { width: 60%; height: 3px; margin: 1.4rem auto 0; background: #1a1d22; border-radius: 999px; overflow: hidden; }
+  .fp-bar i { display: block; height: 100%; width: 0; background: #c6f432; border-radius: 999px; box-shadow: 0 0 12px #c6f432; transition: width .35s ease; }
+  @media (prefers-reduced-motion: no-preference) {
+    .fp-ecg .beat { stroke-dasharray: 1000; stroke-dashoffset: 1000; animation: fpdraw 1.6s cubic-bezier(.6,0,.2,1) infinite; }
+    .fp-word span { opacity: 0; transform: translateY(.5em); animation: fpup .55s cubic-bezier(.2,.8,.2,1) forwards; }
+    .fp-splash .grid { animation: fpgrid 3s linear infinite; }
+    .fp-word .p { animation: fpup .55s cubic-bezier(.2,.8,.2,1) forwards, fpglow 1.6s ease-in-out .9s infinite; }
+  }
+  @keyframes fpdraw { 0% { stroke-dashoffset: 1000; } 70% { stroke-dashoffset: 0; opacity: 1; } 100% { stroke-dashoffset: 0; opacity: 0; } }
+  @keyframes fpup { to { opacity: 1; transform: none; } }
+  @keyframes fpglow { 50% { text-shadow: 0 0 40px rgba(198,244,50,.9); } }
+  @keyframes fpgrid { to { background-position: 0 44px, 0 0; } }
+
+  /* ===== main page motion ===== */
+  .rb-logo i svg path { stroke-dasharray: 60; }
+  .ticker { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: .8rem; background: #0b0c0f; height: 2.4rem;
+    mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent); -webkit-mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent); }
+  .ticker[hidden] { display: none; }
+  .tk-track { display: flex; width: max-content; height: 100%; align-items: center; }
+  .tk-item { display: inline-flex; align-items: center; gap: .55rem; padding: 0 1.4rem; font-size: .8rem; white-space: nowrap; border-right: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  .tk-item .t { color: var(--muted); }
+  .tk-item b { font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+  .tk-item .firm { color: var(--ok); } .tk-item .drift { color: var(--warn); }
+  .tk-item .nx { color: #07080a; background: var(--lime); border-radius: 999px; padding: .05rem .5rem; font-size: .68rem; font-weight: 700; letter-spacing: .06em; }
+  .jump { margin-top: .9rem; }
+  .jump .tr { height: .35rem; background: var(--panel2); border-radius: 999px; overflow: hidden; }
+  .jump .tr i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, rgba(198,244,50,.25), var(--lime)); border-radius: 999px; transition: width 1s linear; }
+  .jump .lb { display: flex; justify-content: space-between; font-size: .7rem; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; margin-top: .3rem; }
+  .jump.hot .tr i { background: linear-gradient(90deg, #fbbf24, #f87171); }
+  .jump.hot .lb span:first-child { color: var(--bad); font-weight: 600; }
+  .nx-when .cd { font-variant-numeric: tabular-nums; }
+  .up-row.nextup { background: linear-gradient(90deg, var(--lime-soft), transparent 70%); border-radius: .5rem; padding-left: .4rem; margin-left: -.4rem; }
+  .up-row.nextup .t { color: var(--lime); font-weight: 600; }
+  .chart rect.bar { transform-box: fill-box; transform-origin: 50% 100%; }
+  @media (prefers-reduced-motion: no-preference) {
+    .rb-logo i svg path { animation: logobeat 2.4s ease-in-out infinite; }
+    .reveal .kpi, .reveal .rb-card, .reveal .ticker { opacity: 0; transform: translateY(14px) scale(.985); animation: rise .7s cubic-bezier(.2,.8,.2,1) forwards; }
+    .reveal .kpi:nth-child(2) { animation-delay: .07s; } .reveal .kpi:nth-child(3) { animation-delay: .14s; } .reveal .kpi:nth-child(4) { animation-delay: .21s; }
+    .reveal .ticker { animation-delay: .25s; }
+    .reveal .rb-grid > :nth-child(1) { animation-delay: .3s; } .reveal .rb-grid > :nth-child(2) { animation-delay: .38s; } .reveal .rb-grid > :nth-child(3) { animation-delay: .46s; }
+    .reveal .rb-grid > :nth-child(4) { animation-delay: .54s; } .reveal .rb-grid > :nth-child(5) { animation-delay: .62s; } .reveal .rb-grid > :nth-child(6) { animation-delay: .7s; } .reveal .rb-grid > :nth-child(7) { animation-delay: .78s; }
+    .kpi, .rb-card { transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease; }
+    .kpi:hover, #home .rb-card:hover { transform: translateY(-3px); border-color: #3a4214; box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 18px 40px rgba(0,0,0,.45), 0 0 0 1px rgba(198,244,50,.08); }
+    #next-off { position: relative; overflow: hidden; }
+    #next-off::before { content: ""; position: absolute; inset: -40% -10% auto auto; width: 60%; height: 120%; background: radial-gradient(closest-side, rgba(198,244,50,.10), transparent); animation: drift 9s ease-in-out infinite alternate; pointer-events: none; }
+    #next-off::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; left: -40%; background: linear-gradient(100deg, transparent, rgba(255,255,255,.035), transparent); animation: sheen 6s ease-in-out infinite; pointer-events: none; }
+    .ring svg circle:nth-child(2) { filter: drop-shadow(0 0 5px rgba(198,244,50,.55)); }
+    .ring::after { content: ""; position: absolute; inset: 6%; border-radius: 50%; box-shadow: 0 0 0 0 rgba(198,244,50,.35); animation: ringpulse 2.6s ease-out infinite; }
+    .grow .tr i { transform-origin: left; animation: grow 1s cubic-bezier(.2,.8,.2,1) both; }
+    .grow .bar-row:nth-child(2) .tr i { animation-delay: .08s; } .grow .bar-row:nth-child(3) .tr i { animation-delay: .16s; }
+    .grow .bar-row:nth-child(4) .tr i { animation-delay: .24s; } .grow .bar-row:nth-child(5) .tr i { animation-delay: .32s; }
+    .grow .bar-row .tr b { animation: fadein .4s ease .9s both; }
+    .slide .up-row { animation: rowin .5s cubic-bezier(.2,.8,.2,1) both; }
+    .slide .up-row:nth-child(2) { animation-delay: .05s; } .slide .up-row:nth-child(3) { animation-delay: .1s; } .slide .up-row:nth-child(4) { animation-delay: .15s; }
+    .slide .up-row:nth-child(5) { animation-delay: .2s; } .slide .up-row:nth-child(n+6) { animation-delay: .25s; }
+    .up-row { transition: background .2s ease; } .up-row:hover { background: var(--panel2); border-radius: .5rem; }
+    .up-row.nextup .t::before { content: ""; display: inline-block; width: .4rem; height: .4rem; border-radius: 50%; background: var(--lime); margin-right: .3rem; vertical-align: middle; animation: rbp 1.4s ease-in-out infinite; }
+    .tk-track.run { animation: tick var(--tk-dur, 40s) linear infinite; }
+    .ticker:hover .tk-track { animation-play-state: paused; }
+    .jump.hot .tr { animation: hot 1s ease-in-out infinite; }
+    .rb-chip.live { animation: chipglow 2.4s ease-in-out infinite; }
+    .pill.WON { animation: pop .5s cubic-bezier(.2,1.6,.4,1) both; }
+  }
+  @keyframes rise { to { opacity: 1; transform: none; } }
+  @keyframes grow { from { transform: scaleX(0); } }
+  @keyframes fadein { from { opacity: 0; } }
+  @keyframes rowin { from { opacity: 0; transform: translateX(-10px); } }
+  @keyframes tick { to { transform: translateX(-50%); } }
+  @keyframes drift { from { transform: translate(0, 0); } to { transform: translate(-30%, 25%); } }
+  @keyframes sheen { 0%, 60% { left: -40%; } 100% { left: 120%; } }
+  @keyframes ringpulse { 0% { box-shadow: 0 0 0 0 rgba(198,244,50,.35); } 100% { box-shadow: 0 0 0 14px rgba(198,244,50,0); } }
+  @keyframes logobeat { 0% { stroke-dashoffset: 60; } 45%, 100% { stroke-dashoffset: 0; } }
+  @keyframes hot { 50% { opacity: .55; } }
+  @keyframes chipglow { 50% { box-shadow: 0 0 14px rgba(198,244,50,.35); } }
+  @keyframes pop { from { transform: scale(.6); opacity: 0; } }
+</style>
+
+<div class="fp-splash" id="fp-splash" role="status" aria-label="Form Pulse is loading">
+    <div class="grid" aria-hidden="true"></div>
+    <div class="fp-in">
+      <svg class="fp-ecg" viewBox="0 0 400 100" aria-hidden="true">
+        <path class="ghost" d="M0 60 H120 L135 60 L150 20 L168 92 L186 8 L204 76 L216 60 H400"/>
+        <path class="beat" d="M0 60 H120 L135 60 L150 20 L168 92 L186 8 L204 76 L216 60 H400"/>
+      </svg>
+      <div class="fp-word" aria-hidden="true"><span style="animation-delay:.15s">F</span><span style="animation-delay:.2s">o</span><span style="animation-delay:.25s">r</span><span style="animation-delay:.3s">m</span>&nbsp;<span class="p" style="animation-delay:.42s">P</span><span class="p" style="animation-delay:.47s">u</span><span class="p" style="animation-delay:.52s">l</span><span class="p" style="animation-delay:.57s">s</span><span class="p" style="animation-delay:.62s">e</span></div>
+      <div class="fp-tag" id="fp-tag">Loading racecards</div>
+      <div class="fp-bar"><i id="fp-bar"></i></div>
+    </div>
+  </div>
+<div class="rb" id="racebot">
+  <div class="rb-shell">
+    <div class="rb-topnav">
+      <div class="rb-logo"><i aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l2-6 4 12 3-9 2 3h5"/></svg></i><b>Form <span class="lime">Pulse</span></b></div>
+      <nav class="rb-tabs" aria-label="Sections">
+        <button class="rb-nav" data-go="home" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
+        <button class="rb-nav" data-go="cards"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="17" rx="2"/><path d="M8 2v4M16 2v4M4 10h16"/></svg>Racecards</button>
+        <button class="rb-nav" data-go="picks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"/></svg>Clear picks</button>
+        <button class="rb-nav" data-go="results"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Results</button>
+      </nav>
+      <span class="rb-chip" id="live"><i></i><span id="live-txt">—</span></span>
+    </div>
+
+    <main class="rb-main">
+      <header class="rb-top">
+        <div><h1 id="v-title">Overview</h1><div class="sub" id="day" data-source="card" data-field="label" data-row="0">—</div></div>
+        <div class="sub" style="max-width:34rem">Back a clear pick unless it drifts more than $0.30 at 2 minutes · each-way $5 + $5 when the place pays $2+, otherwise $10 win · paper bets</div>
+      </header>
+
+      <!-- OVERVIEW -->
+      <section class="rb-view" id="home" data-view="home">
+        <div class="rb-banner" id="stale" hidden></div>
+        <div class="kpis" id="kpis">
+          <div class="kpi" id="kpi-win">
+            <span class="eyebrow">Clear picks won</span>
+            <div class="num lime" data-source="perf" data-field="win_txt" data-row="0">—</div>
+            <span class="k-sub"><span data-source="perf" data-field="won" data-row="0">—</span> of <span data-source="perf" data-field="picks" data-row="0">—</span> since 23 Oct · backtest 35%</span>
+          </div>
+          <div class="kpi" id="kpi-place">
+            <span class="eyebrow">Won or placed</span>
+            <div class="num" data-source="perf" data-field="place_txt" data-row="0">—</div>
+            <span class="k-sub">Finished in the first three</span>
+          </div>
+          <div class="kpi" id="kpi-profit">
+            <span class="eyebrow">$10 win on every pick</span>
+            <div class="num" id="kpi-profit-num" data-source="perf" data-field="profit_txt" data-row="0">—</div>
+            <span class="k-sub">Sportsbet final price · <span data-source="perf" data-field="priced" data-row="0">—</span> picks since 31 Oct</span>
+          </div>
+          <div class="kpi" id="kpi-check">
+            <span class="eyebrow">2-minute price check</span>
+            <div class="ab">
+              <div><b data-source="perf" data-field="back_txt" data-row="0">—</b><small>Back it won</small></div>
+              <div><b data-source="perf" data-field="skip_txt" data-row="0">—</b><small>Skip won</small></div>
+            </div>
+            <span class="k-sub">Backtest said 42% vs 12%</span>
+          </div>
+        </div>
+        <div class="ticker" id="ticker" aria-label="Today's clear picks ticker" hidden><div class="tk-track" id="tk-track"></div></div>
+        <div class="rb-grid">
+          <article class="rb-card c-next" id="next-off" data-source="picks runners">
+            <div class="nx-top"><div class="nx-race eyebrow" id="nx-race">Next pick</div><div class="nx-when" id="nx-when"></div></div>
+            <div id="nx-body"></div>
+          </article>
+          <article class="rb-card c-up" id="upcoming">
+            <h2>Today's clear picks <small id="up-count" data-source="card" data-field="picks_txt" data-row="0">—</small></h2>
+            <p class="note">Score · Sportsbet price · price move · result</p>
+            <div class="up" id="up-list" data-source="picks"></div>
+          </article>
+          <article class="rb-card c-half" id="profit-card">
+            <h2>Running profit <small>$10 win on each clear pick</small></h2>
+            <p class="note">At Sportsbet's last price before the jump. Sportsbet keeps about 10 days of prices, so this starts on 31 Oct.</p>
+            <div class="chart" id="pl-chart" data-source="perf_days"></div>
+          </article>
+          <article class="rb-card c-half" id="record-card">
+            <h2>Win rate by day <small>dashed line = backtest 35%</small></h2>
+            <p class="note">Share of each day's clear picks that won.</p>
+            <div class="chart" id="rec-chart" data-source="record_days"></div>
+          </article>
+          <article class="rb-card c-third" id="field-prob">
+            <h2>Bot vs Sportsbet <small id="fp-race"></small></h2>
+            <p class="note">Bar: bot win chance. Tick: the chance in Sportsbet's price.</p>
+            <div class="bars" id="fp-bars" data-source="runners"></div>
+          </article>
+          <article class="rb-card c-third" id="strip-score">
+            <h2>Why it rates <small id="sb-horse"></small></h2>
+            <p class="note">The next pick's score in each of the four areas.</p>
+            <div class="bars" id="sb-bars" data-source="picks"></div>
+          </article>
+          <article class="rb-card c-third" id="strip-meet">
+            <h2>Today's racecards</h2>
+            <div class="card-tot">
+              <span><b data-source="card" data-field="tracks" data-row="0">—</b> tracks</span>
+              <span><b data-source="card" data-field="races" data-row="0">—</b> races</span>
+              <span><b data-source="card" data-field="picks" data-row="0">—</b> clear picks</span>
+            </div>
+            <div id="meet-list" data-source="meetings"></div>
+          </article>
+        </div>
+      </section>
+
+      <!-- RACECARDS -->
+      <section class="rb-view" id="cards" data-view="cards" hidden>
+        <div class="rc-bar">
+          <button class="btn primary" id="btn-next" type="button">Next off ↻</button>
+          <select class="btn" id="meet-pick" aria-label="Meeting" data-source="meetings"></select>
+        </div>
+        <div class="rc-tabs" id="race-tabs" role="tablist" aria-label="Races" data-source="runners"></div>
+        <div class="rc-head" id="rc-head" data-source="runners"></div>
+        <div class="rh" aria-hidden="true"><span>Runner</span><span class="s">Score</span><span>Price</span><span>Form</span><span>J/T</span><span class="x">Trk</span><span class="x">Bar</span></div>
+        <div class="runners" id="rc-runners" data-source="runners"></div>
+      </section>
+
+      <!-- PICKS -->
+      <section class="rb-view" id="picks" data-view="picks" hidden>
+        <article class="rb-card">
+          <h2>Clear picks</h2>
+          <p class="note">Top-rated horse, 10+ points clear of the next. The 2-minute check decides the bet. Units = 1 unit win bet at Sportsbet's final price, shown once the race is run.</p>
+          <div class="tbl-wrap">
+            <table id="tbl-picks" data-source="picks" data-row-key="race">
+              <thead><tr><th data-field="time">Time</th><th data-field="race">Race</th><th data-field="horse">Horse</th><th class="n" data-field="points">Score</th><th class="n" data-field="price">Price</th>
+                <th class="n hn" data-field="win_prob">Win %</th><th data-field="confidence">Conf.</th><th class="hn" data-field="bet">Bet</th><th data-field="result">Result</th><th class="n" data-field="units">Units</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <!-- RESULTS -->
+      <section class="rb-view" id="results" data-view="results" hidden>
+        <article class="rb-card">
+          <h2>Clear picks by day</h2>
+          <p class="note">From the bot's end-of-day results.</p>
+          <div class="tbl-wrap" style="max-height:18rem">
+            <table id="tbl-days" data-source="record_days" data-row-key="date">
+              <thead><tr><th data-field="date">Day</th><th class="n" data-field="picks">Picks</th><th class="n" data-field="won">Won</th><th class="n" data-field="placed">Placed</th><th class="n" data-field="win_rate">Win %</th><th class="n" data-field="units">Units</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="rb-card">
+          <h2>Every clear pick</h2>
+          <p class="note">Most recent first. Price = Sportsbet's final win price. Units = a 1-unit win bet: a win pays the price minus 1, a loss is −1U.</p>
+          <div class="tbl-wrap">
+            <table id="tbl-res" data-source="results" data-row-key="date,race">
+              <thead><tr><th data-field="date">Day</th><th data-field="race">Race</th><th data-field="horse">Horse</th><th class="n" data-field="points">Score</th><th class="n hn" data-field="gap">Clear by</th><th class="n" data-field="bsp">Price</th><th data-field="result">Result</th><th class="n" data-field="units">Units</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <nav class="rb-tabbar" aria-label="Sections">
+        <button data-go="home" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Home</button>
+        <button data-go="cards"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="17" rx="2"/><path d="M8 2v4M16 2v4M4 10h16"/></svg>Racecards</button>
+        <button data-go="picks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"/></svg>Picks</button>
+        <button data-go="results"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Results</button>
+      </nav>
+    </main>
+  </div>
+</div>
+
+<script>
+  // ---------- calcs ----------
+  dash.calc('card', {
+    title: 'Card at a glance', description: 'Date of the card, clear picks, tracks, races and high-confidence picks.',
+    inputs: ['picks', 'runners'],
+    fn: (picks, runners) => {
+      const day = (runners[0] || picks[0] || {}).date || '';
+      const label = day ? new Date(day + 'T00:00:00Z').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }) : '';
+      return [{ date: day, label, picks: picks.length, picks_txt: picks.length + ' picks',
+        tracks: new Set(runners.map((r) => r.track)).size, races: new Set(runners.map((r) => r.race)).size,
+        high: picks.filter((r) => r.confidence === 'HIGH').length }];
+    }
+  });
+  dash.calc('meetings', {
+    title: 'Meetings on the card', description: 'Each track on the card with its number of races, first race time and clear picks.',
+    inputs: ['runners'],
+    fn: (runners) => {
+      const m = {};
+      runners.forEach((r) => {
+        const x = m[r.track] || (m[r.track] = { track: r.track, races: new Set(), first: r.time, clear: 0 });
+        x.races.add(r.race_no); if (r.time && r.time < x.first) x.first = r.time; if (r.clear === true) x.clear += 1;
+      });
+      return Object.values(m).map((x) => ({ track: x.track, races: x.races.size, first: x.first, clear: x.clear })).sort((a, b) => (a.first < b.first ? -1 : 1));
+    }
+  });
+  dash.calc('record', {
+    title: 'Clear picks record', description: 'Clear picks run so far and the share that won and placed.',
+    inputs: ['results'],
+    fn: (results) => {
+      const c = results.filter((r) => r.clear === true);
+      const w = c.filter((r) => Number(r.won) === 1).length, p = c.filter((r) => Number(r.placed) === 1).length;
+      return [{ picks: c.length, won: w, placed: p, win_txt: c.length ? Math.round(100 * w / c.length) + '%' : '0', place_txt: c.length ? Math.round(100 * p / c.length) + '%' : '0' }];
+    }
+  });
+  // 1 unit = level-stakes win bet at Sportsbet's final price: won -> price - 1, otherwise -1 (no price -> not counted)
+  function unitsOf(r) { const b = Number(r.bsp); if (!b) return null; return Number(r.won) === 1 ? b - 1 : -1; }
+  function unitsTxt(u) { if (u === null || u === undefined || isNaN(u)) return '–'; const v = Math.round(u * 100) / 100; return '(' + (v >= 0 ? '+' : '') + v + 'U)'; }
+  function unitsTd(u) { const c = td(unitsTxt(u), 'n'); if (u !== null && !isNaN(u)) c.classList.add(u >= 0 ? 'u-up' : 'u-dn'); return c; }
+  dash.calc('record_days', {
+    title: 'Clear picks by day', description: 'Clear picks run, won and placed each day, with the win rate and units won or lost (1 unit win bets at Sportsbet\'s final price).',
+    inputs: ['results'],
+    fn: (results) => {
+      const by = {};
+      results.filter((r) => r.clear === true).forEach((r) => {
+        const d = by[r.date] || (by[r.date] = { date: r.date, picks: 0, won: 0, placed: 0, units: 0 });
+        d.picks += 1; d.won += Number(r.won) || 0; d.placed += Number(r.placed) || 0;
+        const u = unitsOf(r); if (u !== null) d.units += u;
+      });
+      return Object.values(by).sort((a, b) => (a.date < b.date ? -1 : 1)).map((d) => ({ ...d, win_rate: Math.round(100 * d.won / d.picks) / 100 }));
+    }
+  });
+
+  dash.calc('perf', {
+    title: 'Clear picks performance', description: 'Win and place rates of every clear pick since 23 Oct, profit of $10 win bets at Sportsbet\'s final price, and how Back it and Skip alerts did.',
+    inputs: ['history'],
+    fn: (history) => {
+      const clear = history.filter((r) => r.clear === 'True');
+      const won = clear.filter((r) => r.result === 'Won').length;
+      const placed = clear.filter((r) => r.result === 'Won' || r.result === 'Placed').length;
+      const priced = clear.filter((r) => r.final_price != null && r.final_price !== '');
+      const profit = priced.reduce((s, r) => s + (r.result === 'Won' ? 10 * (Number(r.final_price) - 1) : -10), 0);
+      const rate = (alert) => { const g = clear.filter((r) => r.alert === alert); return g.length ? g.filter((r) => r.result === 'Won').length / g.length : null; };
+      const pctTxt = (v) => (v == null ? '—' : Math.round(100 * v) + '%');
+      return [{ picks: clear.length, won, win_txt: pctTxt(won / clear.length), place_txt: pctTxt(placed / clear.length),
+        priced: priced.length, profit: Math.round(profit), profit_txt: (profit < 0 ? '−$' : '+$') + Math.abs(Math.round(profit)),
+        back_txt: pctTxt(rate('Back it')), skip_txt: pctTxt(rate('Skip')) }];
+    }
+  });
+  dash.calc('perf_days', {
+    title: 'Running profit by day', description: 'Profit each day from $10 win bets on clear picks at Sportsbet\'s final price, and the running total.',
+    inputs: ['history'],
+    fn: (history) => {
+      const by = {};
+      history.filter((r) => r.clear === 'True' && r.final_price != null && r.final_price !== '').forEach((r) => {
+        const d = by[r.date] || (by[r.date] = { date: r.date, picks: 0, profit: 0 });
+        d.picks += 1; d.profit += r.result === 'Won' ? 10 * (Number(r.final_price) - 1) : -10;
+      });
+      let run = 0;
+      return Object.values(by).sort((a, b) => (a.date < b.date ? -1 : 1))
+        .map((d) => { run += d.profit; return { date: d.date, picks: d.picks, profit: Math.round(d.profit * 100) / 100, running: Math.round(run * 100) / 100 }; });
+    }
+  });
+
+  // ---------- helpers ----------
+  const BNE = 'Australia/Brisbane';
+  const now = () => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: BNE, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
+      .formatToParts(new Date()).map((x) => [x.type, x.value]));
+    return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour === '24' ? '00' : p.hour}:${p.minute}` };
+  };
+  const past = (r) => { const n = now(); return r.date < n.date || (r.date === n.date && (r.time || '') <= n.time); };
+  const hm = (t) => { if (!t) return ''; const [h, m] = t.split(':').map(Number); return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h < 12 ? 'AM' : 'PM'}`; };
+  const mins = (t) => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  const td = (c, cls) => { const x = el('td', cls); if (c instanceof Node) x.append(c); else x.textContent = c == null ? '' : c; return x; };
+  const pct = (v) => Math.round(Number(v) * 100) + '%';
+  const money = (v) => (v == null || v !== v || v === '') ? '—' : '$' + Number(v).toFixed(2);
+  const confPill = (c) => el('span', 'pill ' + c, c === 'HIGH' ? '⭐ HIGH' : c);
+  const resPill = (r) => r === 'WON' ? el('span', 'pill WON', 'Won') : r === 'placed' ? el('span', 'pill placed', 'Placed') : r === 'lost' ? el('span', 'pill lost', 'Lost') : el('span', 'pill wait', 'To run');
+  const rows = (id) => { const s = dash.data(id); return s.status === 'ok' ? s.data : null; };
+  const flucs = (s) => String(s || '').split(' > ').map(Number).filter((v) => v > 0);
+  const spark = (s, w = 72, h = 20) => {
+    const p = flucs(s);
+    const box = el('span', 'mv flat');
+    if (p.length < 2) { box.textContent = '—'; return box; }
+    const a = p[0], z = p[p.length - 1];
+    box.className = 'mv ' + (z < a ? 'firm' : z > a ? 'drift' : 'flat');
+    const sx = d3.scaleLinear([0, p.length - 1], [2, w - 3]), sy = d3.scaleLinear(d3.extent(p), [h - 3, 3]);
+    const svg = d3.select(box).append('svg').attr('width', w).attr('height', h).attr('role', 'img').attr('aria-label', `Sportsbet price moved from $${a} to $${z}`);
+    svg.append('path').datum(p).attr('fill', 'none').attr('stroke', 'currentColor').attr('stroke-width', 1.5).attr('d', d3.line((_, i) => sx(i), (v) => sy(v)));
+    svg.append('circle').attr('cx', sx(p.length - 1)).attr('cy', sy(z)).attr('r', 2.4).attr('fill', 'currentColor');
+    box.append(document.createTextNode((z < a ? '↓ ' : z > a ? '↑ ' : '') + `$${a} → $${z}`));
+    return box;
+  };
+  const AREAS = [['FORM_pts', 'Form', 35], ['JOCKEY_pts', 'Jockey / trainer', 30], ['TRACK_pts', 'Track / dist / cond', 9], ['BARRIER_pts', 'Barrier / wt / class', 27]];
+
+  // ---------- motion helpers ----------
+  const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const seen = {};
+  const changed = (k, v) => { const c = seen[k] !== v; seen[k] = v; return c && !calm; };
+  const nowSec = () => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: BNE, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+      .formatToParts(new Date()).map((x) => [x.type, x.value]));
+    return (Number(p.hour) % 24) * 3600 + Number(p.minute) * 60 + Number(p.second);
+  };
+  // count a number up to its new value, keeping any $ / % / + around it
+  const countTo = (e, text) => {
+    text = String(text);
+    if (e.dataset.v === text) return;
+    const from = Number(e.dataset.n || 0); e.dataset.v = text;
+    const m = text.match(/\d[\d,]*(\.\d+)?/);
+    if (!m || calm) { e.textContent = text; return; }
+    const pre = text.slice(0, m.index), post = text.slice(m.index + m[0].length), to = Number(m[0].replace(/,/g, '')), dp = m[1] ? m[1].length - 1 : 0;
+    e.dataset.n = to;
+    const t0 = performance.now(), dur = 900;
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / dur), v = from + (to - from) * (1 - Math.pow(1 - k, 3));
+      if (e.dataset.v !== text) return;
+      e.textContent = pre + v.toFixed(dp) + post;
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  };
+  const replay = (node, cls) => { node.classList.remove(cls); void node.offsetWidth; node.classList.add(cls); };
+  // cards rise in, then the class comes off so hover effects work
+  let revealT;
+  const revealHome = () => { const h = document.getElementById('home'); if (calm) return; replay(h, 'reveal'); clearTimeout(revealT); revealT = setTimeout(() => h.classList.remove('reveal'), 1700); };
+
+  // ---------- navigation ----------
+  const TITLES = { home: 'Overview', cards: 'Racecards', picks: 'Clear picks', results: 'Results' };
+  let view = 'home';
+  const go = (v) => {
+    if (!TITLES[v]) return;
+    view = v;
+    document.querySelectorAll('[data-view]').forEach((s) => { s.hidden = s.dataset.view !== v; });
+    document.querySelectorAll('[data-go]').forEach((b) => { if (b.dataset.go === v) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
+    document.getElementById('v-title').textContent = TITLES[v];
+    dash.setLink(v);
+    for (const k in seen) delete seen[k];
+    if (v === 'home') revealHome();
+    draw();
+  };
+  document.querySelectorAll('[data-go]').forEach((b) => b.addEventListener('click', () => go(b.dataset.go)));
+
+  // racecard state
+  let meet = null, raceNo = null;
+  const meetPick = document.getElementById('meet-pick');
+  meetPick.addEventListener('change', () => { meet = meetPick.value; raceNo = null; drawCards(); });
+  document.getElementById('btn-next').addEventListener('click', () => { const r = nextRace(); if (r) { meet = r.track; raceNo = r.race_no; } drawCards(); });
+  const nextRace = () => { const rs = rows('runners') || []; return rs.filter((r) => r.rank === 1 && !past(r)).sort((a, b) => (a.time < b.time ? -1 : 1))[0] || rs[0]; };
+  const openRace = (track, no) => { meet = track; raceNo = no; go('cards'); };
+
+  // ---------- draw ----------
+  function fillMarks() {
+    for (const id of ['card', 'record', 'perf']) {
+      const s = dash.data(id);
+      document.querySelectorAll(`[data-source="${id}"][data-field]`).forEach((e) => {
+        const v = s.status === 'ok' && s.data.length ? String(s.data[0][e.dataset.field]) : '—';
+        if (e.closest('#home')) countTo(e, v); else e.textContent = v;
+      });
+    }
+    const pf = dash.data('perf'), pn = document.getElementById('kpi-profit-num');
+    if (pn && pf.status === 'ok' && pf.data.length) pn.classList.toggle('neg', pf.data[0].profit < 0), pn.classList.toggle('pos', pf.data[0].profit >= 0);
+  }
+
+  function nextPick() {
+    const p = rows('picks') || [];
+    return p.find((r) => !past(r) && r.confidence !== 'SKIP') || p.find((r) => !past(r)) || null;
+  }
+
+  function drawHeader() {
+    const p = rows('picks'), live = document.getElementById('live'), txt = document.getElementById('live-txt'), stale = document.getElementById('stale');
+    const day = (rows('card') || [{}])[0].date, today = now().date;
+    const onToday = day === today, upcoming = onToday && (p || []).some((r) => !past(r));
+    live.classList.toggle('live', upcoming);
+    txt.textContent = upcoming ? 'Live' : onToday ? 'Card finished' : 'Last card';
+    stale.hidden = !day || onToday;
+    stale.textContent = day && !onToday ? `Showing the last card the bot ran (${new Date(day + 'T00:00:00Z').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' })}). Today's picks appear after the 8:30 AM run.` : '';
+  }
+
+  function drawNext() {
+    const body = document.getElementById('nx-body'), race = document.getElementById('nx-race'), when = document.getElementById('nx-when');
+    body.replaceChildren(); when.replaceChildren();
+    const all = rows('picks');
+    if (!all) return;
+    const n = nextPick();
+    const r = n || all[all.length - 1];
+    if (!r) { race.textContent = 'Next pick'; body.append(el('p', 'empty', 'No clear picks on this card.')); return; }
+    race.replaceChildren(document.createTextNode(n ? 'Next pick · ' : 'Last pick · '), el('b', null, `R${r.race_no} ${r.track}`));
+    when.append(el('div', 'num', hm(r.time)));
+    const t = now();
+    if (n && r.date === t.date) { const c = el('div', 'cd'); c.id = 'nx-cd'; c.dataset.at = mins(r.time) * 60; when.append(c); }
+    else if (!n) when.append(el('div', null, 'All picks have run'));
+    const run = (rows('runners') || []).find((x) => x.race === r.race && x.horse === r.horse) || {};
+    const b = el('div', 'nx-body');
+    const left = el('div');
+    const h = el('div', 'nx-horse'); h.append(el('small', null, `#${r.tab_no}${run.barrier ? ' (' + run.barrier + ')' : ''}`), document.createTextNode(r.horse));
+    left.append(h);
+    if (run.jockey || run.trainer) left.append(el('div', 'nx-people', `J: ${run.jockey || '—'}   ·   T: ${run.trainer || '—'}${run.weight ? '   ·   ' + run.weight + 'kg' : ''}`));
+    const f = el('div'); f.style.marginTop = '.8rem'; f.append(el('div', 'eyebrow', 'Recent form'));
+    const fr = el('div', 'form'); (r.form || '').split(' · ').filter(Boolean).forEach((x) => fr.append(el('span', x === '1st' ? 'w' : '', x))); f.append(fr); left.append(f);
+    const ring = el('div', 'ring');
+    const v = Math.max(0, Math.min(100, Number(r.points)));
+    const ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg'); svg.setAttribute('viewBox', '0 0 100 100');
+    const c1 = document.createElementNS(ns, 'circle'); c1.setAttribute('cx', 50); c1.setAttribute('cy', 50); c1.setAttribute('r', 44); c1.setAttribute('fill', 'none'); c1.setAttribute('stroke', '#1a1d22'); c1.setAttribute('stroke-width', 9);
+    const c2 = c1.cloneNode(); c2.setAttribute('stroke', '#c6f432'); c2.setAttribute('stroke-linecap', 'round'); c2.setAttribute('stroke-dasharray', `${(v / 100) * 276.5} 276.5`);
+    svg.append(c1, c2); const lab = el('div', 'lab'); const inner = el('div'); const sc = el('div', 'num'); inner.append(sc, el('small', null, 'BOT SCORE')); lab.append(inner); ring.append(svg, lab);
+    if (changed('ring', r.race + '|' + r.points)) {
+      c2.setAttribute('stroke-dasharray', '0 276.5');
+      c2.animate([{ strokeDasharray: '0 276.5' }, { strokeDasharray: `${(v / 100) * 276.5} 276.5` }], { duration: 1400, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' });
+      countTo(sc, String(Math.round(v)));
+    } else sc.textContent = String(Math.round(v));
+    b.append(left, ring);
+    const facts = el('div', 'nx-facts');
+    const fact = (k, val) => { const d = el('div'); d.append(el('span', 'eyebrow', k)); const x = el('b'); if (val instanceof Node) x.append(val); else x.textContent = val; d.append(x); return d; };
+    facts.append(fact('Sportsbet', money(r.price) + (r.place_price ? '  ·  plc ' + money(r.place_price) : '')), fact('Price move', spark(r.flucs)), fact('Win probability', pct(r.win_prob)), fact('Confidence', confPill(r.confidence)), fact('Clear by', '+' + Number(r.gap).toFixed(1) + ' pts'),
+      fact('2-min check', r.alert === 'Back it' ? '🔥 ' + (r.bet || 'Back it') : r.alert === 'Skip' ? '⚠️ Skip, drifted' : 'Due 2 min before'),
+      fact('Result', resPill(r.result)));
+    const ul = el('ul', 'why');
+    (r.reasons || '').split(' | ').filter(Boolean).forEach((x) => ul.append(el('li', null, x)));
+    ul.append(el('li', null, `${Math.round(r.gap)} points clear of the next horse`));
+    const why = el('div'); why.style.marginTop = '1rem'; why.append(el('div', 'eyebrow', 'Why the bot likes it'), ul);
+    const jump = el('div', 'jump'); jump.id = 'nx-jump'; jump.hidden = !(n && r.date === t.date);
+    const jt = el('div', 'tr'); jt.append(el('i')); const jl = el('div', 'lb'); jl.append(el('span', null, 'Countdown to the jump'), el('span', null, '60 min'));
+    jump.append(jt, jl);
+    body.append(jump, b, facts, why);
+    tick();
+  }
+
+  // live countdown, every second
+  function tick() {
+    const c = document.getElementById('nx-cd'), j = document.getElementById('nx-jump');
+    if (!c) return;
+    const left = Number(c.dataset.at) - nowSec();
+    if (left <= 0) { c.textContent = 'Jumping now'; if (j) { j.classList.add('hot'); j.querySelector('i').style.width = '100%'; } return; }
+    const h = Math.floor(left / 3600), m = Math.floor((left % 3600) / 60), s2 = left % 60, pad = (x) => String(x).padStart(2, '0');
+    c.textContent = h ? `in ${h}h ${pad(m)}m ${pad(s2)}s` : `in ${m}m ${pad(s2)}s`;
+    if (j) {
+      j.querySelector('i').style.width = Math.max(0, Math.min(100, 100 * (1 - left / 3600))) + '%';
+      j.classList.toggle('hot', left <= 120);
+      j.querySelector('.lb span').textContent = left <= 120 ? '2-minute price check now' : 'Countdown to the jump';
+    }
+  }
+  setInterval(tick, 1000);
+
+  // scrolling ticker of today's picks
+  function drawTicker() {
+    const box = document.getElementById('ticker'), track = document.getElementById('tk-track');
+    const p = rows('picks');
+    if (!p || !p.length) { box.hidden = true; return; }
+    const nx = nextPick();
+    const items = p.map((r) => {
+      const f = flucs(r.flucs), a = f[0], z = f[f.length - 1];
+      return { t: hm(r.time), race: `${r.track} R${r.race_no}`, horse: r.horse, price: money(r.price),
+        mv: f.length > 1 ? (z < a ? 'firm' : z > a ? 'drift' : '') : '', mvt: f.length > 1 ? (z < a ? '▼ ' : z > a ? '▲ ' : '') + Math.abs(Math.round(100 * (z / a - 1))) + '%' : '',
+        res: past(r) ? r.result : '', next: nx && nx.race === r.race };
+    });
+    const key = JSON.stringify(items);
+    if (seen.ticker === key && !box.hidden) return;
+    seen.ticker = key; box.hidden = false;
+    const make = () => items.map((x) => {
+      const it = el('span', 'tk-item');
+      it.append(el('span', 't', x.t), el('span', null, x.race), el('b', null, x.horse), el('span', null, x.price));
+      if (x.mvt) it.append(el('span', x.mv, x.mvt));
+      if (x.next) it.append(el('span', 'nx', 'NEXT'));
+      else if (x.res) it.append(resPill(x.res));
+      return it;
+    });
+    track.replaceChildren(...make(), ...make());
+    track.style.setProperty('--tk-dur', Math.max(20, items.length * 5) + 's');
+    track.classList.toggle('run', !calm);
+  }
+
+  function drawUpcoming() {
+    const box = document.getElementById('up-list'); box.replaceChildren();
+    const p = rows('picks'); if (!p) return;
+    const nx = nextPick();
+    if (changed('up', p.map((r) => r.race + r.result).join())) replay(box, 'slide');
+    if (!p.length) { box.append(el('p', 'empty', 'No clear picks on this card.')); return; }
+    p.forEach((r) => {
+      const row = el('div', 'up-row' + (past(r) ? ' past' : '') + (nx && nx.race === r.race ? ' nextup' : ''));
+      const h = el('div', 'h'); h.append(el('b', null, `#${r.tab_no} ${r.horse}`), el('span', null, `${r.track} R${r.race_no}`));
+      const o = el('div', 'odds');
+      const chip = (k, v, hl) => { const s = el('span', hl ? 'hl' : ''); s.append(el('small', null, k), document.createTextNode(v)); return s; };
+      const p = flucs(r.flucs), mvTxt = p.length > 1 ? (p[p.length - 1] < p[0] ? '↓' : p[p.length - 1] > p[0] ? '↑' : '→') + Math.abs(Math.round(100 * (p[p.length - 1] / p[0] - 1))) + '%' : '—';
+      const mvChip = chip('Move', mvTxt); if (p.length > 1) mvChip.classList.add(p[p.length - 1] < p[0] ? 'firm' : p[p.length - 1] > p[0] ? 'drift' : 'flat');
+      o.append(chip('Score', String(Math.round(r.points)), r.confidence === 'HIGH'), chip('Price', money(r.price)), mvChip,
+        past(r) ? (() => { const s = el('span'); s.append(el('small', null, 'Result'), resPill(r.result)); return s; })() : (() => { const s = el('span'); s.append(el('small', null, 'Conf'), document.createTextNode(r.confidence === 'HIGH' ? 'High' : r.confidence === 'SKIP' ? 'Skip' : 'Med')); return s; })());
+      row.append(el('div', 't', hm(r.time).replace(' ', ' ')), h, o);
+      row.style.cursor = 'pointer'; row.addEventListener('click', () => openRace(r.track, r.race_no));
+      box.append(row);
+    });
+  }
+
+  function drawFieldProb() {
+    const box = document.getElementById('fp-bars'); box.replaceChildren();
+    const rs = rows('runners'), p = rows('picks'); if (!rs || !p) return;
+    const r = nextPick() || p[p.length - 1]; if (!r) return;
+    document.getElementById('fp-race').textContent = `${r.track} R${r.race_no}`;
+    if (changed('fp', r.race)) replay(box, 'grow');
+    const field = rs.filter((x) => x.race === r.race).sort((a, b) => b.win_prob - a.win_prob).slice(0, 5);
+    const max = Math.max(...field.map((x) => x.win_prob), 0.01);
+    if (!field.length) box.append(el('p', 'empty', 'No runners for this race.'));
+    field.forEach((x, k) => {
+      const row = el('div', 'bar-row' + (k === 0 ? ' top' : ''));
+      const scale = Math.max(max, ...field.map((y) => Number(y.mkt_prob) || 0));
+      const tr = el('div', 'tr'); const i = el('i'); i.style.width = (100 * x.win_prob / scale) + '%'; tr.append(i);
+      if (x.mkt_prob) { const t = el('b'); t.style.left = `calc(${(100 * x.mkt_prob / scale).toFixed(1)}% - 1px)`; tr.append(t); }
+      row.append(el('div', 'nm', `#${x.tab_no} ${x.horse}  ·  ${money(x.price)}`), el('div', 'v', pct(x.win_prob) + (x.mkt_prob ? ' / ' + pct(x.mkt_prob) : '')), tr);
+      box.append(row);
+    });
+  }
+
+  function drawScore() {
+    const box = document.getElementById('sb-bars'); box.replaceChildren();
+    const p = rows('picks'); if (!p) return;
+    const r = nextPick() || p[p.length - 1]; if (!r) return;
+    document.getElementById('sb-horse').textContent = r.horse;
+    if (changed('sb', r.race)) replay(box, 'grow');
+    AREAS.forEach(([k, name, max]) => {
+      const row = el('div', 'bar-row top'); const tr = el('div', 'tr'); const i = el('i'); i.style.width = Math.min(100, 100 * r[k] / max) + '%'; tr.append(i);
+      row.append(el('div', 'nm', name), el('div', 'v', `${Math.round(r[k])}/${max}`), tr); box.append(row);
+    });
+  }
+
+  function drawMeetings() {
+    const box = document.getElementById('meet-list'); box.replaceChildren();
+    const m = rows('meetings'); if (!m) return;
+    if (!m.length) { box.append(el('p', 'empty', 'No meetings.')); return; }
+    m.forEach((x) => {
+      const row = el('div', 'meet'); const b = el('button', null, x.track); b.type = 'button';
+      b.addEventListener('click', () => openRace(x.track, null));
+      row.append(b, el('span', null, `${x.races} races · from ${hm(x.first)}${x.clear ? ' · ⭐' + x.clear : ''}`)); box.append(row);
+    });
+  }
+
+  function drawRecordChart() {
+    const box = document.getElementById('rec-chart'); box.replaceChildren();
+    const d = rows('record_days'); if (!d) return;
+    if (!d.length) { box.append(el('p', 'empty', 'Results appear after the first day.')); return; }
+    const W = Math.max(240, box.clientWidth || 300), H = 120, m = { t: 8, r: 6, b: 20, l: 6 };
+    const x = d3.scaleBand(d.map((r) => r.date), [m.l, W - m.r]).padding(0.35);
+    const y = d3.scaleLinear([0, 1], [H - m.b, m.t]);
+    const svg = d3.select(box).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`);
+    svg.append('line').attr('x1', m.l).attr('x2', W - m.r).attr('y1', y(0.35)).attr('y2', y(0.35)).attr('stroke', '#8b929e').attr('stroke-dasharray', '3 4').attr('stroke-width', 1);
+    svg.append('text').attr('x', W - m.r).attr('y', y(0.35) - 4).attr('text-anchor', 'end').attr('fill', '#8b929e').attr('font-size', 10).text('backtest 35%');
+    svg.selectAll('rect').data(d).join('rect').attr('x', (r) => x(r.date)).attr('width', x.bandwidth()).attr('y', (r) => y(r.win_rate)).attr('height', (r) => y(0) - y(r.win_rate))
+      .attr('rx', 4).attr('fill', '#c6f432').attr('class', 'bar');
+    if (changed('rec', d.map((r) => r.date + r.win_rate).join())) svg.selectAll('rect.bar').each(function (_, k) {
+      this.animate([{ transform: 'scaleY(0)' }, { transform: 'scaleY(1)' }], { duration: 800, delay: 60 * k, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' });
+    });
+    const every = Math.max(1, Math.ceil(44 / x.step()));
+    svg.selectAll('text.lb').data(d.filter((_, k) => k % every === 0 || k === d.length - 1)).join('text').attr('class', 'lb').attr('x', (r) => x(r.date) + x.bandwidth() / 2).attr('y', H - 5).attr('text-anchor', 'middle')
+      .attr('fill', '#8b929e').attr('font-size', 10).text((r) => new Date(r.date + 'T00:00:00Z').toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' }));
+    const tip = el('div', 'tip'); tip.hidden = true; box.append(tip);
+    svg.selectAll('rect').on('mousemove', (ev, r) => {
+      tip.replaceChildren(el('div', 'd', new Date(r.date + 'T00:00:00Z').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })),
+        el('div', null, `${r.won} won of ${r.picks} · ${Math.round(r.win_rate * 100)}%`));
+      tip.hidden = false; const [px] = d3.pointer(ev, box);
+      tip.style.left = Math.min(Math.max(0, px + 8), box.clientWidth - tip.offsetWidth) + 'px'; tip.style.top = '0px';
+    }).on('mouseleave', () => { tip.hidden = true; });
+  }
+
+  function drawProfit() {
+    const box = document.getElementById('pl-chart'); box.replaceChildren();
+    const s = dash.data('perf_days');
+    if (s.status === 'error') { box.append(el('p', 'empty', 'Failed to load')); return; }
+    const d = s.status === 'ok' ? s.data : null; if (!d) return;
+    if (!d.length) { box.append(el('p', 'empty', 'No final prices yet.')); return; }
+    const W = Math.max(240, box.clientWidth || 300), H = 150;
+    const fmt = (v) => (v < 0 ? '−$' : '+$') + Math.abs(Math.round(v));
+    const y = d3.scaleLinear([Math.min(0, d3.min(d, (r) => r.running)), Math.max(0, d3.max(d, (r) => r.running))], [H - 20, 10]).nice();
+    const svg = d3.select(box).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img')
+      .attr('aria-label', `Running profit of $10 win bets on clear picks, now ${fmt(d[d.length - 1].running)}`);
+    const probe = (t) => { const n = svg.append('text').attr('font-size', 10).text(t); const w = n.node().getComputedTextLength(); n.remove(); return w; };
+    const left = Math.ceil(Math.max(...y.ticks(4).map((v) => probe(fmt(v))))) + 8, right = Math.ceil(probe(fmt(d[d.length - 1].running))) + 12;
+    const x = d3.scalePoint(d.map((r) => r.date), [left + 6, W - right]);
+    svg.append('g').attr('class', 'ax').attr('transform', `translate(${left},0)`).call(d3.axisLeft(y).ticks(4).tickSize(-(W - left - right)).tickFormat(fmt));
+    svg.append('g').attr('class', 'ax').attr('transform', `translate(0,${H - 20})`).call(d3.axisBottom(x).tickSize(0).tickPadding(6)
+      .tickFormat((t) => new Date(t + 'T00:00:00Z').toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' })));
+    svg.append('line').attr('x1', left).attr('x2', W - right).attr('y1', y(0)).attr('y2', y(0)).attr('stroke', '#8b929e').attr('stroke-dasharray', '3 4');
+    const end = d[d.length - 1], col = end.running < 0 ? '#f87171' : '#c6f432';
+    const line = svg.append('path').datum(d).attr('fill', 'none').attr('stroke', col).attr('stroke-width', 2).attr('d', d3.line((r) => x(r.date), (r) => y(r.running)));
+    const drawIn = changed('pl', d.map((r) => r.date + r.running).join());
+    if (drawIn) { const L = line.node().getTotalLength(); line.attr('stroke-dasharray', `${L} ${L}`); line.node().animate([{ strokeDashoffset: L }, { strokeDashoffset: 0 }], { duration: 1500, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'backwards' }); }
+    const tip = el('div', 'tip'); tip.hidden = true; box.append(tip);
+    svg.selectAll('circle').data(d).join('circle').attr('cx', (r) => x(r.date)).attr('cy', (r) => y(r.running)).attr('r', 3.5).attr('fill', col)
+      .on('mouseenter', (ev, r) => {
+        tip.replaceChildren(el('div', 'd', new Date(r.date + 'T00:00:00Z').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })),
+          el('div', null, `${fmt(r.profit)} on ${r.picks} picks · total ${fmt(r.running)}`));
+        tip.hidden = false;
+        tip.style.left = Math.min(Math.max(0, x(r.date) - tip.offsetWidth / 2), box.clientWidth - tip.offsetWidth) + 'px'; tip.style.top = Math.max(0, y(r.running) - 44) + 'px';
+      }).on('mouseleave', () => { tip.hidden = true; });
+    svg.append('text').attr('x', x(end.date) + 8).attr('y', y(end.running)).attr('dy', '.35em').attr('font-size', 11).attr('fill', col).text(fmt(end.running));
+    if (drawIn) svg.selectAll(':scope > circle, :scope > text').each(function (_, k) { this.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 400, delay: 1200 + 40 * k, fill: 'backwards' }); });
+  }
+
+  function drawCards() {
+    const rs = rows('runners'), mt = rows('meetings');
+    const tabs = document.getElementById('race-tabs'), head = document.getElementById('rc-head'), list = document.getElementById('rc-runners');
+    tabs.replaceChildren(); head.replaceChildren(); list.replaceChildren();
+    if (!rs || !mt) return;
+    if (!rs.length) { list.append(el('p', 'empty', 'No racecards yet.')); return; }
+    if (!meet || !mt.some((x) => x.track === meet)) { const n = nextRace(); meet = n ? n.track : mt[0].track; raceNo = n ? n.race_no : null; }
+    if (meetPick !== document.activeElement) {
+      meetPick.replaceChildren(...mt.map((x) => new Option(`${x.track} · ${x.races} races`, x.track))); meetPick.value = meet;
+    }
+    const races = [...new Set(rs.filter((x) => x.track === meet).map((x) => x.race_no))].sort((a, b) => a - b);
+    if (!races.includes(raceNo)) {
+      const up = rs.filter((x) => x.track === meet && x.rank === 1 && !past(x)).sort((a, b) => a.race_no - b.race_no)[0];
+      raceNo = up ? up.race_no : races[0];
+    }
+    races.forEach((no) => {
+      const b = el('button', 'btn', 'R' + no); b.type = 'button'; b.setAttribute('role', 'tab');
+      b.setAttribute('aria-pressed', String(no === raceNo));
+      if (rs.some((x) => x.track === meet && x.race_no === no && x.clear === true)) { b.classList.add('clear'); b.textContent = '⭐ R' + no; }
+      b.addEventListener('click', () => { raceNo = no; drawCards(); }); tabs.append(b);
+    });
+    const field = rs.filter((x) => x.track === meet && x.race_no === raceNo).sort((a, b) => a.rank - b.rank);
+    if (!field.length) return;
+    const f0 = field[0];
+    head.append(el('div', 'num', `${hm(f0.time)} - ${f0.track}`), el('p', null, f0.race_name || ''),
+      el('div', 'meta', [f0.dist ? f0.dist + 'm' : '', f0.race_class || '', field.length + ' runners', f0.price_at ? 'Sportsbet prices at ' + hm(f0.price_at) : ''].filter(Boolean).join('  |  ')));
+    const tag = el('div', 'tag');
+    tag.append(f0.clear === true ? el('span', 'pill HIGH', `⭐ Clear pick: ${f0.horse} (+${Math.round(f0.gap)})`) : el('span', 'pill wait', `No clear pick · top two ${Math.round(f0.gap || 0)} pts apart`));
+    head.append(tag);
+    field.forEach((r) => {
+      const card = el('div', 'runner' + (r.clear === true ? ' clear' : ''));
+      const who = el('div', 'who');
+      who.append(el('b', null, `${r.tab_no}${r.barrier ? '(' + r.barrier + ')' : ''} ${r.horse}`));
+      const line = (k, v) => { const d = el('div'); d.append(el('span', null, k + ' '), document.createTextNode(v || '—')); return d; };
+      who.append(line('J:', r.jockey), line('T:', r.trainer), line('Form:', r.last10 || '—'), line('Bot win:', pct(r.win_prob) + (r.mkt_prob ? '  ·  market ' + pct(r.mkt_prob) : '') + (r.weight ? '  ·  ' + r.weight + 'kg' : '')));
+      const sc = el('div', 'sc'); const sv = el('div'); sv.append(document.createTextNode(String(Math.round(r.points))), el('small', null, '#' + r.rank)); sc.append(sv);
+      const pr = el('div', 'pr'); const pv = el('div'); pv.append(document.createTextNode(money(r.price)), el('small', null, r.place_price ? 'plc ' + money(r.place_price) : '')); pr.append(pv);
+      card.append(who, sc, pr, el('div', 'ar', String(Math.round(r.FORM_pts))), el('div', 'ar', String(Math.round(r.JOCKEY_pts))),
+        el('div', 'ar x', String(Math.round(r.TRACK_pts))), el('div', 'ar x', String(Math.round(r.BARRIER_pts))));
+      list.append(card);
+    });
+  }
+
+  function drawPicksTable() {
+    const tb = document.querySelector('#tbl-picks tbody'); tb.replaceChildren();
+    const p = rows('picks'); if (!p) return;
+    if (!p.length) { const tr = el('tr'); const c = td('No clear picks on this card.', 'empty'); c.colSpan = 10; tr.append(c); tb.append(tr); return; }
+    p.forEach((r) => {
+      const tr = el('tr', past(r) ? 'past' : '');
+      tr.append(td(hm(r.time)), td(r.race), td(`#${r.tab_no} ${r.horse}`), td(String(Math.round(r.points)), 'n'), td(money(r.price), 'n'), td(pct(r.win_prob), 'n hn'),
+        td(confPill(r.confidence)), td(r.alert === 'Back it' ? (r.bet || 'Back') : r.alert === 'Skip' ? 'Skip' : '', 'hn'), td(resPill(r.result)),
+        unitsTd(r.result ? unitsOf({ bsp: r.bsp, won: String(r.result).toUpperCase() === 'WON' ? 1 : 0 }) : null));
+      tb.append(tr);
+    });
+  }
+
+  function drawResults() {
+    const d = rows('record_days'), tb = document.querySelector('#tbl-days tbody'); tb.replaceChildren();
+    if (d) d.slice().reverse().forEach((r) => {
+      const tr = el('tr'); tr.dataset.key = r.date;
+      tr.append(td(new Date(r.date + 'T00:00:00Z').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })),
+        td(r.picks, 'n'), td(r.won, 'n'), td(r.placed, 'n'), td(Math.round(r.win_rate * 100) + '%', 'n'), unitsTd(r.units));
+      tb.append(tr);
+    });
+    const res = rows('results'), tb2 = document.querySelector('#tbl-res tbody'); tb2.replaceChildren();
+    if (res) res.filter((r) => r.clear === true).slice().reverse().forEach((r) => {
+      const tr = el('tr'); tr.dataset.key = encodeURIComponent(r.date) + ',' + encodeURIComponent(r.race);
+      tr.append(td(new Date(r.date + 'T00:00:00Z').toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' })), td(r.race), td(r.horse),
+        td(String(Math.round(r.points)), 'n'), td('+' + Number(r.gap).toFixed(1), 'n hn'), td(Number(r.bsp) ? '$' + Number(r.bsp).toFixed(2) : '–', 'n'), td(resPill(r.result)), unitsTd(unitsOf(r)));
+      tb2.append(tr);
+    });
+  }
+
+  function draw() {
+    fillMarks(); drawHeader();
+    if (view === 'home') { drawTicker(); drawNext(); drawUpcoming(); drawFieldProb(); drawProfit(); drawRecordChart(); drawScore(); drawMeetings(); }
+    if (view === 'cards') drawCards();
+    if (view === 'picks') drawPicksTable();
+    if (view === 'results') drawResults();
+  }
+  dash.onData(draw);
+  setInterval(() => { if (view === 'home') { drawHeader(); drawTicker(); drawNext(); drawUpcoming(); drawFieldProb(); drawScore(); } }, 60000);
+
+  // ---------- Form Pulse loading screen ----------
+  (() => {
+    const sp = document.getElementById('fp-splash'), bar = document.getElementById('fp-bar'), tag = document.getElementById('fp-tag');
+    const steps = ['Loading racecards', 'Reading the form', 'Rating every runner', 'Checking Sportsbet prices', 'Watching the market', 'Finding clear picks'];
+    document.documentElement.classList.add('fp-lock');
+    const t0 = performance.now(), minT = calm ? 1500 : 6000, maxT = 10000;
+    let k = 0, done = false;
+    const iv = setInterval(() => { k = Math.min(k + 1, steps.length - 1); tag.textContent = steps[k]; bar.style.width = Math.round(100 * (k + 1) / (steps.length + 1)) + '%'; }, calm ? 250 : 1000);
+    bar.style.width = Math.round(100 / (steps.length + 1)) + '%';
+    const ready = () => ['picks', 'runners'].every((id) => dash.data(id).status !== 'loading');
+    const finish = () => {
+      if (done) return; done = true; clearInterval(iv);
+      tag.textContent = 'Ready'; bar.style.width = '100%';
+      setTimeout(() => {
+        sp.classList.add('out'); document.documentElement.classList.remove('fp-lock');
+        revealHome();
+        for (const x in seen) delete seen[x]; draw();
+        setTimeout(() => sp.remove(), 700);
+      }, calm ? 0 : 600);
+    };
+    const check = () => { const e = performance.now() - t0; if ((e >= minT && ready()) || e >= maxT) finish(); else setTimeout(check, 100); };
+    check();
+  })();
+  const named = location.hash.slice(1); if (TITLES[named]) go(named);
+</script>
+
+</body>
+</html>

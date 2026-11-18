@@ -1,0 +1,1 @@
+window.RACEBOT = { supabaseUrl: "https://bpjvsulmvdlbgxbdgwvb.supabase.co", supabaseAnonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJwanZzdWxtdmRsYmd4YmRnd3ZiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMzMzM1MjcsImV4cCI6MjEwODkwOTUyN30.k-fomLiPQyXWkPvuBuhq4-EKu8YyusSf7aY1_B2QV5s" };
