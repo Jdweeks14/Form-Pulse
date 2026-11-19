@@ -123,7 +123,7 @@ window.dash = (() => {
     --blue: #c6f432; --blue-soft: rgba(198,244,50,.10); --lime: #c6f432; --lime-soft: rgba(198,244,50,.12);
     --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --score: #c6f432;
     container-type: inline-size; background: var(--bg); color: var(--fg); font-family: var(--font-anthropic-sans);
-    border-radius: var(--cds-radius); overflow: hidden; color-scheme: dark; min-height: 40rem;
+    border-radius: var(--cds-radius); overflow: clip; color-scheme: dark; min-height: 40rem;
   }
   .rb * { box-sizing: border-box; }
   .rb-shell { display: block; min-height: 40rem; }
@@ -285,10 +285,12 @@ window.dash = (() => {
     .c-next, .c-up { grid-column: span 12; } .c-ai, .c-field, .c-rec { grid-column: span 6; } .c-rec { grid-column: span 12; }
   }
   @container (max-width: 760px) {
-    .rb-tabs { display: none; }
-    .rb-topnav { padding: .75rem 1rem; }
+    .rb-topnav { padding: .6rem 1rem 0; gap: .4rem 1rem; position: sticky; top: 0; z-index: 3; }
+    .rb-tabs { order: 3; flex: 1 0 100%; gap: 0; justify-content: space-between; overflow: visible; }
+    .rb-tabs .rb-nav { flex: 1; justify-content: center; padding: .55rem 0 .6rem; font-size: .82rem; gap: .3rem; }
+    .rb-tabs .rb-nav svg { display: none; }
     .rb-top { padding: 1rem; }
-    .rb-view { padding: 1rem 1rem 5.5rem; }
+    .rb-view { padding: 1rem 1rem 2rem; }
     .c-ai, .c-field { grid-column: span 12; }
     .nx-body { grid-template-columns: 1fr; }
     .nx-horse { font-size: 1.6rem; }
@@ -296,8 +298,7 @@ window.dash = (() => {
     .runner, .rh { grid-template-columns: minmax(0, 1fr) 3.4rem 3.8rem repeat(2, 3rem); }
     .runner .ar.x, .rh span.x { display: none; }
     .rh span:nth-child(5) { border-radius: 0 .45rem 0 0; }
-    .rb-tabbar { display: grid; grid-template-columns: repeat(4, 1fr); position: sticky; bottom: 0; z-index: 2;
-      background: #0b0c0f; border-top: 1px solid var(--line); padding: .4rem .5rem calc(.4rem + env(safe-area-inset-bottom, 0px)); }
+    .rb-tabbar { display: none; }
     .rb-tabbar button { appearance: none; background: none; border: 0; color: var(--muted); font: inherit; font-size: .68rem; display: flex; flex-direction: column;
       align-items: center; gap: .2rem; padding: .35rem 0; cursor: pointer; }
     .rb-tabbar button[aria-current="page"] { color: var(--lime); }
@@ -683,7 +684,10 @@ window.dash = (() => {
   const pct = (v) => Math.round(Number(v) * 100) + '%';
   const money = (v) => (v == null || v !== v || v === '') ? '—' : '$' + Number(v).toFixed(2);
   const confPill = (c) => el('span', 'pill ' + c, c === 'HIGH' ? '⭐ HIGH' : c);
-  const resPill = (r) => r === 'WON' ? el('span', 'pill WON', 'Won') : r === 'placed' ? el('span', 'pill placed', 'Placed') : r === 'lost' ? el('span', 'pill lost', 'Lost') : el('span', 'pill wait', 'To run');
+  const ordinal = (n) => { n = Number(n); return n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th'); };
+  // result pill; a placing shows where it finished (2nd, 3rd...) when Punting Form has posted the position
+  const resPill = (r, pos) => { r = String(r || '').toLowerCase(); const p = Number(pos) > 0 && Number(pos) < 99 ? ordinal(pos) : null;
+    return r === 'won' ? el('span', 'pill WON', 'Won') : r === 'placed' ? el('span', 'pill placed', p || 'Placed') : r === 'lost' ? el('span', 'pill lost', 'Lost') : el('span', 'pill wait', 'To run'); };
   const rows = (id) => { const s = dash.data(id); return s.status === 'ok' ? s.data : null; };
   const flucs = (s) => String(s || '').split(' > ').map(Number).filter((v) => v > 0);
   const spark = (s, w = 72, h = 20) => {
@@ -829,7 +833,7 @@ window.dash = (() => {
     facts.append(fact('Sportsbet', money(r.price) + (r.place_price ? '  ·  plc ' + money(r.place_price) : '')), fact('Price move', spark(r.flucs)), fact('Win probability', pct(r.win_prob)), fact('Confidence', confPill(r.confidence)), fact('Clear by', '+' + Number(r.gap).toFixed(1) + ' pts'),
       fact('2-min check', r.alert === 'Back it' ? '🔥 Back it' : r.alert === 'Skip' ? '⚠️ Skip, drifted' : 'Due 2 min before'),
       fact('Bet', (() => { const b = betOf(r); return b.t === 'Skip' ? 'No bet' : (b.ew ? 'Each-way $5 win + $5 place' : '$10 win') + (b.planned ? ' (if backed)' : ''); })()),
-      fact('Result', resPill(r.result)));
+      fact('Result', resPill(r.result, r.pos)));
     const ul = el('ul', 'why');
     (r.reasons || '').split(' | ').filter(Boolean).forEach((x) => ul.append(el('li', null, x)));
     ul.append(el('li', null, `${Math.round(r.gap)} points clear of the next horse`));
@@ -899,7 +903,7 @@ window.dash = (() => {
       const p = flucs(r.flucs), mvTxt = p.length > 1 ? (p[p.length - 1] < p[0] ? '↓' : p[p.length - 1] > p[0] ? '↑' : '→') + Math.abs(Math.round(100 * (p[p.length - 1] / p[0] - 1))) + '%' : '—';
       const mvChip = chip('Move', mvTxt); if (p.length > 1) mvChip.classList.add(p[p.length - 1] < p[0] ? 'firm' : p[p.length - 1] > p[0] ? 'drift' : 'flat');
       o.append(chip('Score', String(Math.round(r.points)), r.confidence === 'HIGH'), chip('Price', money(r.price)), mvChip,
-        past(r) ? (() => { const s = el('span'); s.append(el('small', null, 'Result'), resPill(r.result)); return s; })() : (() => { const b = betOf(r), s = el('span', b.ew ? 'hl' : ''); s.append(el('small', null, 'Bet'), document.createTextNode(b.t === 'EW $5+$5' ? 'EW' : b.t === '$10 Win' ? 'Win' : 'Skip')); return s; })());
+        past(r) ? (() => { const s = el('span'); s.append(el('small', null, 'Result'), resPill(r.result, r.pos)); return s; })() : (() => { const b = betOf(r), s = el('span', b.ew ? 'hl' : ''); s.append(el('small', null, 'Bet'), document.createTextNode(b.t === 'EW $5+$5' ? 'EW' : b.t === '$10 Win' ? 'Win' : 'Skip')); return s; })());
       row.append(el('div', 't', hm(r.time).replace(' ', ' ')), h, o);
       row.style.cursor = 'pointer'; row.addEventListener('click', () => openRace(r.track, r.race_no));
       box.append(row);
@@ -1059,7 +1063,7 @@ window.dash = (() => {
     p.forEach((r) => {
       const tr = el('tr', past(r) ? 'past' : '');
       tr.append(td(hm(r.time)), td(r.race), td(`#${r.tab_no} ${r.horse}`), td(String(Math.round(r.points)), 'n'), td(money(r.price), 'n'), td(pct(r.win_prob), 'n hn'),
-        td(confPill(r.confidence)), td((() => { const b = betOf(r); return b.t + (b.planned && b.t !== 'Skip' ? '*' : ''); })(), 'hn'), td(resPill(r.result)),
+        td(confPill(r.confidence)), td((() => { const b = betOf(r); return b.t + (b.planned && b.t !== 'Skip' ? '*' : ''); })(), 'hn'), td(resPill(r.result, r.pos)),
         unitsTd(r.result ? unitsOf({ bsp: r.bsp, won: String(r.result).toUpperCase() === 'WON' ? 1 : 0 }) : null));
       tb.append(tr);
     });
@@ -1077,7 +1081,7 @@ window.dash = (() => {
     if (res) res.filter((r) => r.clear === true).slice().reverse().forEach((r) => {
       const tr = el('tr'); tr.dataset.key = encodeURIComponent(r.date) + ',' + encodeURIComponent(r.race);
       tr.append(td(new Date(r.date + 'T00:00:00Z').toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' })), td(r.race), td(r.horse),
-        td(String(Math.round(r.points)), 'n'), td('+' + Number(r.gap).toFixed(1), 'n hn'), td(Number(r.bsp) ? '$' + Number(r.bsp).toFixed(2) : '–', 'n'), td(resPill(r.result)), unitsTd(unitsOf(r)));
+        td(String(Math.round(r.points)), 'n'), td('+' + Number(r.gap).toFixed(1), 'n hn'), td(Number(r.bsp) ? '$' + Number(r.bsp).toFixed(2) : '–', 'n'), td(resPill(r.result, r.pos)), unitsTd(unitsOf(r)));
       tb2.append(tr);
     });
   }
