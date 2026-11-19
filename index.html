@@ -540,7 +540,7 @@ window.dash = (() => {
       <section class="rb-view" id="picks" data-view="picks" hidden>
         <article class="rb-card">
           <h2>Clear picks</h2>
-          <p class="note">Top-rated horse, 10+ points clear of the next. The 2-minute check decides the bet. Units = 1 unit win bet at Sportsbet's final price, shown once the race is run.</p>
+          <p class="note">Top-rated horse, 10+ points clear of the next. Bet = each-way $5 + $5 when the place pays $2+, otherwise $10 win (* = planned from the latest price; the 2-minute check makes it final). Units = 1 unit win bet at Sportsbet's final price, shown once the race is run.</p>
           <div class="tbl-wrap">
             <table id="tbl-picks" data-source="picks" data-row-key="race">
               <thead><tr><th data-field="time">Time</th><th data-field="race">Race</th><th data-field="horse">Horse</th><th class="n" data-field="points">Score</th><th class="n" data-field="price">Price</th>
@@ -699,6 +699,12 @@ window.dash = (() => {
     box.append(document.createTextNode((z < a ? '↓ ' : z > a ? '↑ ' : '') + `$${a} → $${z}`));
     return box;
   };
+  // bet for a clear pick: each-way $5+$5 if the place pays $2+, else $10 win (final once the 2-min check has run)
+  const betOf = (r) => {
+    if (r.alert === 'Skip') return { t: 'Skip', ew: false, planned: false };
+    const ew = r.alert === 'Back it' && r.bet ? /EW|each/i.test(r.bet) : Number(r.place_price) >= 2;
+    return { t: ew ? 'EW $5+$5' : '$10 Win', ew, planned: !(r.alert === 'Back it' && r.bet) };
+  };
   const AREAS = [['FORM_pts', 'Form', 35], ['JOCKEY_pts', 'Jockey / trainer', 30], ['TRACK_pts', 'Track / dist / cond', 9], ['BARRIER_pts', 'Barrier / wt / class', 27]];
 
   // ---------- motion helpers ----------
@@ -821,7 +827,8 @@ window.dash = (() => {
     const facts = el('div', 'nx-facts');
     const fact = (k, val) => { const d = el('div'); d.append(el('span', 'eyebrow', k)); const x = el('b'); if (val instanceof Node) x.append(val); else x.textContent = val; d.append(x); return d; };
     facts.append(fact('Sportsbet', money(r.price) + (r.place_price ? '  ·  plc ' + money(r.place_price) : '')), fact('Price move', spark(r.flucs)), fact('Win probability', pct(r.win_prob)), fact('Confidence', confPill(r.confidence)), fact('Clear by', '+' + Number(r.gap).toFixed(1) + ' pts'),
-      fact('2-min check', r.alert === 'Back it' ? '🔥 ' + (r.bet || 'Back it') : r.alert === 'Skip' ? '⚠️ Skip, drifted' : 'Due 2 min before'),
+      fact('2-min check', r.alert === 'Back it' ? '🔥 Back it' : r.alert === 'Skip' ? '⚠️ Skip, drifted' : 'Due 2 min before'),
+      fact('Bet', (() => { const b = betOf(r); return b.t === 'Skip' ? 'No bet' : (b.ew ? 'Each-way $5 win + $5 place' : '$10 win') + (b.planned ? ' (if backed)' : ''); })()),
       fact('Result', resPill(r.result)));
     const ul = el('ul', 'why');
     (r.reasons || '').split(' | ').filter(Boolean).forEach((x) => ul.append(el('li', null, x)));
@@ -892,7 +899,7 @@ window.dash = (() => {
       const p = flucs(r.flucs), mvTxt = p.length > 1 ? (p[p.length - 1] < p[0] ? '↓' : p[p.length - 1] > p[0] ? '↑' : '→') + Math.abs(Math.round(100 * (p[p.length - 1] / p[0] - 1))) + '%' : '—';
       const mvChip = chip('Move', mvTxt); if (p.length > 1) mvChip.classList.add(p[p.length - 1] < p[0] ? 'firm' : p[p.length - 1] > p[0] ? 'drift' : 'flat');
       o.append(chip('Score', String(Math.round(r.points)), r.confidence === 'HIGH'), chip('Price', money(r.price)), mvChip,
-        past(r) ? (() => { const s = el('span'); s.append(el('small', null, 'Result'), resPill(r.result)); return s; })() : (() => { const s = el('span'); s.append(el('small', null, 'Conf'), document.createTextNode(r.confidence === 'HIGH' ? 'High' : r.confidence === 'SKIP' ? 'Skip' : 'Med')); return s; })());
+        past(r) ? (() => { const s = el('span'); s.append(el('small', null, 'Result'), resPill(r.result)); return s; })() : (() => { const b = betOf(r), s = el('span', b.ew ? 'hl' : ''); s.append(el('small', null, 'Bet'), document.createTextNode(b.t === 'EW $5+$5' ? 'EW' : b.t === '$10 Win' ? 'Win' : 'Skip')); return s; })());
       row.append(el('div', 't', hm(r.time).replace(' ', ' ')), h, o);
       row.style.cursor = 'pointer'; row.addEventListener('click', () => openRace(r.track, r.race_no));
       box.append(row);
@@ -1052,7 +1059,7 @@ window.dash = (() => {
     p.forEach((r) => {
       const tr = el('tr', past(r) ? 'past' : '');
       tr.append(td(hm(r.time)), td(r.race), td(`#${r.tab_no} ${r.horse}`), td(String(Math.round(r.points)), 'n'), td(money(r.price), 'n'), td(pct(r.win_prob), 'n hn'),
-        td(confPill(r.confidence)), td(r.alert === 'Back it' ? (r.bet || 'Back') : r.alert === 'Skip' ? 'Skip' : '', 'hn'), td(resPill(r.result)),
+        td(confPill(r.confidence)), td((() => { const b = betOf(r); return b.t + (b.planned && b.t !== 'Skip' ? '*' : ''); })(), 'hn'), td(resPill(r.result)),
         unitsTd(r.result ? unitsOf({ bsp: r.bsp, won: String(r.result).toUpperCase() === 'WON' ? 1 : 0 }) : null));
       tb.append(tr);
     });
