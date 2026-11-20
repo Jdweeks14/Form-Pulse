@@ -469,9 +469,9 @@ window.dash = (() => {
             <span class="k-sub">Finished in the first three</span>
           </div>
           <div class="kpi" id="kpi-profit">
-            <span class="eyebrow">$10 win on every pick</span>
+            <span class="eyebrow">Paper profit · bot's bets</span>
             <div class="num" id="kpi-profit-num" data-source="perf" data-field="profit_txt" data-row="0">—</div>
-            <span class="k-sub">Sportsbet final price · <span data-source="perf" data-field="priced" data-row="0">—</span> picks since 31 Oct</span>
+            <span class="k-sub"><span data-source="perf" data-field="priced" data-row="0">—</span> bets, <span data-source="perf" data-field="skips" data-row="0">—</span> skips not bet · EW $5+$5 if place $2+, else $10 win</span>
           </div>
           <div class="kpi" id="kpi-check">
             <span class="eyebrow">2-minute price check</span>
@@ -494,7 +494,7 @@ window.dash = (() => {
             <div class="up" id="up-list" data-source="picks"></div>
           </article>
           <article class="rb-card c-half" id="profit-card">
-            <h2>Running profit <small>$10 win on each clear pick</small></h2>
+            <h2>Running profit <small>bot's paper bets · skips not bet</small></h2>
             <p class="note">At Sportsbet's last price before the jump. Sportsbet keeps about 10 days of prices, so this starts on 31 Oct.</p>
             <div class="chart" id="pl-chart" data-source="perf_days"></div>
           </article>
@@ -638,6 +638,16 @@ window.dash = (() => {
     }
   });
 
+  // paper P/L of the bot's actual bet on one clear pick (Sportsbet final prices):
+  // SKIP = no bet (0); BACK = each-way $5 + $5 when the place pays $2+, otherwise $10 win. null = no final price yet.
+  function paperPL(r) {
+    const w = Number(r.final_price); if (!w) return null;
+    if (r.alert === 'Skip') return 0;
+    const p = Number(r.final_place), won = r.result === 'Won', plc = won || r.result === 'Placed';
+    const ew = r.bet ? /EW|each/i.test(r.bet) : p >= 2;
+    if (ew && p) return (won ? 5 * (w - 1) : -5) + (plc ? 5 * (p - 1) : -5);
+    return won ? 10 * (w - 1) : -10;
+  }
   dash.calc('perf', {
     title: 'Clear picks performance', description: 'Win and place rates of every clear pick since 23 Oct, profit of $10 win bets at Sportsbet\'s final price, and how Back it and Skip alerts did.',
     inputs: ['history'],
@@ -645,12 +655,13 @@ window.dash = (() => {
       const clear = history.filter((r) => r.clear === 'True');
       const won = clear.filter((r) => r.result === 'Won').length;
       const placed = clear.filter((r) => r.result === 'Won' || r.result === 'Placed').length;
-      const priced = clear.filter((r) => r.final_price != null && r.final_price !== '');
-      const profit = priced.reduce((s, r) => s + (r.result === 'Won' ? 10 * (Number(r.final_price) - 1) : -10), 0);
+      const priced = clear.filter((r) => paperPL(r) !== null && r.alert !== 'Skip');          // bets actually placed
+      const skips = clear.filter((r) => paperPL(r) !== null && r.alert === 'Skip').length;
+      const profit = priced.reduce((s, r) => s + paperPL(r), 0);
       const rate = (alert) => { const g = clear.filter((r) => r.alert === alert); return g.length ? g.filter((r) => r.result === 'Won').length / g.length : null; };
       const pctTxt = (v) => (v == null ? '—' : Math.round(100 * v) + '%');
       return [{ picks: clear.length, won, win_txt: pctTxt(won / clear.length), place_txt: pctTxt(placed / clear.length),
-        priced: priced.length, profit: Math.round(profit), profit_txt: (profit < 0 ? '−$' : '+$') + Math.abs(Math.round(profit)),
+        priced: priced.length, skips, profit: Math.round(profit), profit_txt: (profit < 0 ? '−$' : '+$') + Math.abs(Math.round(profit)),
         back_txt: pctTxt(rate('Back it')), skip_txt: pctTxt(rate('Skip')) }];
     }
   });
@@ -659,9 +670,9 @@ window.dash = (() => {
     inputs: ['history'],
     fn: (history) => {
       const by = {};
-      history.filter((r) => r.clear === 'True' && r.final_price != null && r.final_price !== '').forEach((r) => {
+      history.filter((r) => r.clear === 'True' && paperPL(r) !== null).forEach((r) => {
         const d = by[r.date] || (by[r.date] = { date: r.date, picks: 0, profit: 0 });
-        d.picks += 1; d.profit += r.result === 'Won' ? 10 * (Number(r.final_price) - 1) : -10;
+        if (r.alert !== 'Skip') d.picks += 1; d.profit += paperPL(r);
       });
       let run = 0;
       return Object.values(by).sort((a, b) => (a.date < b.date ? -1 : 1))
@@ -989,7 +1000,7 @@ window.dash = (() => {
     const fmt = (v) => (v < 0 ? '−$' : '+$') + Math.abs(Math.round(v));
     const y = d3.scaleLinear([Math.min(0, d3.min(d, (r) => r.running)), Math.max(0, d3.max(d, (r) => r.running))], [H - 20, 10]).nice();
     const svg = d3.select(box).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img')
-      .attr('aria-label', `Running profit of $10 win bets on clear picks, now ${fmt(d[d.length - 1].running)}`);
+      .attr('aria-label', `Running profit of the bot's paper bets on clear picks, now ${fmt(d[d.length - 1].running)}`);
     const probe = (t) => { const n = svg.append('text').attr('font-size', 10).text(t); const w = n.node().getComputedTextLength(); n.remove(); return w; };
     const left = Math.ceil(Math.max(...y.ticks(4).map((v) => probe(fmt(v))))) + 8, right = Math.ceil(probe(fmt(d[d.length - 1].running))) + 12;
     const x = d3.scalePoint(d.map((r) => r.date), [left + 6, W - right]);
