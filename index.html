@@ -541,7 +541,7 @@ window.dash = (() => {
       <section class="rb-view" id="picks" data-view="picks" hidden>
         <article class="rb-card">
           <h2>Clear picks</h2>
-          <p class="note">Top-rated horse, 10+ points clear of the next. Bet = each-way $5 + $5 when the place pays $2+, otherwise $10 win (* = planned from the latest price; the 2-minute check makes it final). Units = 1 unit win bet at Sportsbet's final price, shown once the race is run.</p>
+          <p class="note">Top-rated horse, 10+ points clear of the next. Bet = each-way $5 + $5 when the place pays $2+, otherwise $10 win (* = planned from the latest price; the 2-minute check makes it final). Units = 1 unit win bet at Sportsbet's final price, shown once the race is run (a Skip is no bet, so 0U).</p>
           <div class="tbl-wrap">
             <table id="tbl-picks" data-source="picks" data-row-key="race">
               <thead><tr><th data-field="time">Time</th><th data-field="race">Race</th><th data-field="horse">Horse</th><th class="n" data-field="points">Score</th><th class="n" data-field="price">Price</th>
@@ -566,7 +566,7 @@ window.dash = (() => {
         </article>
         <article class="rb-card">
           <h2>Every clear pick</h2>
-          <p class="note">Most recent first. Price = Sportsbet's final win price. Units = a 1-unit win bet: a win pays the price minus 1, a loss is −1U.</p>
+          <p class="note">Most recent first. Price = Sportsbet's final win price. Units = a 1-unit win bet: a win pays the price minus 1, a loss is −1U, a Skip is 0U (no bet).</p>
           <div class="tbl-wrap">
             <table id="tbl-res" data-source="results" data-row-key="date,race">
               <thead><tr><th data-field="date">Day</th><th data-field="race">Race</th><th data-field="horse">Horse</th><th class="n" data-field="points">Score</th><th class="n hn" data-field="gap">Clear by</th><th class="n" data-field="bsp">Price</th><th data-field="result">Result</th><th class="n" data-field="units">Units</th></tr></thead>
@@ -621,18 +621,20 @@ window.dash = (() => {
     }
   });
   // 1 unit = level-stakes win bet at Sportsbet's final price: won -> price - 1, otherwise -1 (no price -> not counted)
-  function unitsOf(r) { const b = Number(r.bsp); if (!b) return null; return Number(r.won) === 1 ? b - 1 : -1; }
+  // skipped picks (2-min check said SKIP) = no bet, so 0 units
+  function skipKeys(history) { const s = new Set(); (history || []).forEach((r) => { if (r.alert === 'Skip') s.add(r.date + '|' + r.race); }); return s; }
+  function unitsOf(r, skips) { const b = Number(r.bsp); if (!b) return null; if (skips && skips.has(r.date + '|' + r.race)) return 0; return Number(r.won) === 1 ? b - 1 : -1; }
   function unitsTxt(u) { if (u === null || u === undefined || isNaN(u)) return '–'; const v = Math.round(u * 100) / 100; return '(' + (v >= 0 ? '+' : '') + v + 'U)'; }
   function unitsTd(u) { const c = td(unitsTxt(u), 'n'); if (u !== null && !isNaN(u)) c.classList.add(u >= 0 ? 'u-up' : 'u-dn'); return c; }
   dash.calc('record_days', {
     title: 'Clear picks by day', description: 'Clear picks run, won and placed each day, with the win rate and units won or lost (1 unit win bets at Sportsbet\'s final price).',
-    inputs: ['results'],
-    fn: (results) => {
-      const by = {};
+    inputs: ['results', 'history'],
+    fn: (results, history) => {
+      const by = {}, sk = skipKeys(history);
       results.filter((r) => r.clear === true).forEach((r) => {
         const d = by[r.date] || (by[r.date] = { date: r.date, picks: 0, won: 0, placed: 0, units: 0 });
         d.picks += 1; d.won += Number(r.won) || 0; d.placed += Number(r.placed) || 0;
-        const u = unitsOf(r); if (u !== null) d.units += u;
+        const u = unitsOf(r, sk); if (u !== null) d.units += u;
       });
       return Object.values(by).sort((a, b) => (a.date < b.date ? -1 : 1)).map((d) => ({ ...d, win_rate: Math.round(100 * d.won / d.picks) / 100 }));
     }
@@ -1075,7 +1077,7 @@ window.dash = (() => {
       const tr = el('tr', past(r) ? 'past' : '');
       tr.append(td(hm(r.time)), td(r.race), td(`#${r.tab_no} ${r.horse}`), td(String(Math.round(r.points)), 'n'), td(money(r.price), 'n'), td(pct(r.win_prob), 'n hn'),
         td(confPill(r.confidence)), td((() => { const b = betOf(r); return b.t + (b.planned && b.t !== 'Skip' ? '*' : ''); })(), 'hn'), td(resPill(r.result, r.pos)),
-        unitsTd(r.result ? unitsOf({ bsp: r.bsp, won: String(r.result).toUpperCase() === 'WON' ? 1 : 0 }) : null));
+        unitsTd(r.result ? (r.alert === 'Skip' && Number(r.bsp) ? 0 : unitsOf({ bsp: r.bsp, won: String(r.result).toUpperCase() === 'WON' ? 1 : 0 })) : null));
       tb.append(tr);
     });
   }
@@ -1088,11 +1090,11 @@ window.dash = (() => {
         td(r.picks, 'n'), td(r.won, 'n'), td(r.placed, 'n'), td(Math.round(r.win_rate * 100) + '%', 'n'), unitsTd(r.units));
       tb.append(tr);
     });
-    const res = rows('results'), tb2 = document.querySelector('#tbl-res tbody'); tb2.replaceChildren();
+    const sk = skipKeys(rows('history')), res = rows('results'), tb2 = document.querySelector('#tbl-res tbody'); tb2.replaceChildren();
     if (res) res.filter((r) => r.clear === true).slice().reverse().forEach((r) => {
       const tr = el('tr'); tr.dataset.key = encodeURIComponent(r.date) + ',' + encodeURIComponent(r.race);
       tr.append(td(new Date(r.date + 'T00:00:00Z').toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' })), td(r.race), td(r.horse),
-        td(String(Math.round(r.points)), 'n'), td('+' + Number(r.gap).toFixed(1), 'n hn'), td(Number(r.bsp) ? '$' + Number(r.bsp).toFixed(2) : '–', 'n'), td(resPill(r.result, r.pos)), unitsTd(unitsOf(r)));
+        td(String(Math.round(r.points)), 'n'), td('+' + Number(r.gap).toFixed(1), 'n hn'), td(Number(r.bsp) ? '$' + Number(r.bsp).toFixed(2) : '–', 'n'), td(resPill(r.result, r.pos)), unitsTd(unitsOf(r, sk)));
       tb2.append(tr);
     });
   }
