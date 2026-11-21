@@ -461,7 +461,7 @@ window.dash = (() => {
           <div class="kpi" id="kpi-win">
             <span class="eyebrow">Clear picks won</span>
             <div class="num lime" data-source="perf" data-field="win_txt" data-row="0">—</div>
-            <span class="k-sub"><span data-source="perf" data-field="won" data-row="0">—</span> of <span data-source="perf" data-field="picks" data-row="0">—</span> since 23 Oct · backtest 35%</span>
+            <span class="k-sub"><span data-source="perf" data-field="won" data-row="0">—</span> of <span data-source="perf" data-field="picks" data-row="0">—</span> since 23 Oct · skips left out · backtest 35%</span>
           </div>
           <div class="kpi" id="kpi-place">
             <span class="eyebrow">Won or placed</span>
@@ -613,9 +613,9 @@ window.dash = (() => {
   });
   dash.calc('record', {
     title: 'Clear picks record', description: 'Clear picks run so far and the share that won and placed.',
-    inputs: ['results'],
-    fn: (results) => {
-      const c = results.filter((r) => r.clear === true);
+    inputs: ['results', 'history'],
+    fn: (results, history) => {
+      const sk = skipKeys(history), c = results.filter((r) => r.clear === true && !sk.has(r.date + '|' + r.race));
       const w = c.filter((r) => Number(r.won) === 1).length, p = c.filter((r) => Number(r.placed) === 1).length;
       return [{ picks: c.length, won: w, placed: p, win_txt: c.length ? Math.round(100 * w / c.length) + '%' : '0', place_txt: c.length ? Math.round(100 * p / c.length) + '%' : '0' }];
     }
@@ -631,7 +631,7 @@ window.dash = (() => {
     inputs: ['results', 'history'],
     fn: (results, history) => {
       const by = {}, sk = skipKeys(history);
-      results.filter((r) => r.clear === true).forEach((r) => {
+      results.filter((r) => r.clear === true && !sk.has(r.date + '|' + r.race)).forEach((r) => {
         const d = by[r.date] || (by[r.date] = { date: r.date, picks: 0, won: 0, placed: 0, units: 0 });
         d.picks += 1; d.won += Number(r.won) || 0; d.placed += Number(r.placed) || 0;
         const u = unitsOf(r, sk); if (u !== null) d.units += u;
@@ -655,14 +655,15 @@ window.dash = (() => {
     inputs: ['history'],
     fn: (history) => {
       const clear = history.filter((r) => r.clear === 'True');
-      const won = clear.filter((r) => r.result === 'Won').length;
-      const placed = clear.filter((r) => r.result === 'Won' || r.result === 'Placed').length;
+      const bet = clear.filter((r) => r.alert !== 'Skip');                                   // skips are non-bets: left out of the tally
+      const won = bet.filter((r) => r.result === 'Won').length;
+      const placed = bet.filter((r) => r.result === 'Won' || r.result === 'Placed').length;
       const priced = clear.filter((r) => paperPL(r) !== null && r.alert !== 'Skip');          // bets actually placed
       const skips = clear.filter((r) => paperPL(r) !== null && r.alert === 'Skip').length;
       const profit = priced.reduce((s, r) => s + paperPL(r), 0);
       const rate = (alert) => { const g = clear.filter((r) => r.alert === alert); return g.length ? g.filter((r) => r.result === 'Won').length / g.length : null; };
       const pctTxt = (v) => (v == null ? '—' : Math.round(100 * v) + '%');
-      return [{ picks: clear.length, won, win_txt: pctTxt(won / clear.length), place_txt: pctTxt(placed / clear.length),
+      return [{ picks: bet.length, won, win_txt: pctTxt(won / bet.length), place_txt: pctTxt(placed / bet.length),
         priced: priced.length, skips, profit: Math.round(profit), profit_txt: (profit < 0 ? '−$' : '+$') + Math.abs(Math.round(profit)),
         back_txt: pctTxt(rate('Back it')), skip_txt: pctTxt(rate('Skip')) }];
     }
