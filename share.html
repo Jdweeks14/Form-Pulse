@@ -28,7 +28,7 @@ h1{font:700 2.4rem/1 var(--disp);margin:0;letter-spacing:.01em;text-wrap:balance
 .rules h2{font:700 1.05rem/1 var(--disp);text-transform:uppercase;letter-spacing:.08em;margin:0 0 4px;color:var(--accent)}
 .rules p{margin:0}
 ol{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
-.pick{display:grid;grid-template-columns:4.2rem minmax(0,1fr) 4.6rem 8.6rem;gap:12px;align-items:center;padding:12px 4px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.pick{display:grid;grid-template-columns:4.2rem minmax(0,1fr) 5.2rem 8.6rem;gap:12px;align-items:center;padding:12px 4px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
 .pick.done{opacity:.72}
 .t{font:600 1.15rem/1 var(--disp);color:var(--mute)}
 .who b{display:block;font-weight:600}.who span,.gap span,.px span{display:block;color:var(--mute);font-size:.85rem}
@@ -43,14 +43,16 @@ ol{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
 .tag{display:inline-block;padding:1px 8px;border-radius:99px;background:var(--ewbg);color:var(--ew);font-weight:600}
 .fine{color:var(--mute);font-size:.88rem;margin:0}
 .msg{color:var(--mute);padding:24px 4px;margin:0}
-@media (max-width:560px){.pick{grid-template-columns:3.6rem minmax(0,1fr) auto;row-gap:2px}.gap{display:none}}
+.conf{display:inline-block;margin-top:3px;padding:0 8px;border-radius:99px;font-size:.75rem;font-weight:600;letter-spacing:.04em;background:var(--line);color:var(--mute)}
+.conf.HIGH{background:var(--goodbg);color:var(--good)}.conf.MEDIUM{background:var(--ewbg);color:var(--ew)}
+@media (max-width:560px){.pick{grid-template-columns:3.4rem minmax(0,1fr) 3.6rem auto;gap:8px}.gap span{font-size:.75rem}}
 </style>
 </head>
 <body>
 <div class="wrap">
   <header><h1 id="h">Clear Picks</h1><p class="sub" id="sub">Loading today's picks…</p></header>
   <section class="rules"><h2>How to follow</h2>
-    <p><b>The pick:</b> the bot's top-rated horse, only when it's 10+ points clear of the next best in its race.</p>
+    <p><b>The pick:</b> the bot's top-rated horse, only when it's 10+ points clear of the next best in its race. <b>Score</b> is its rating out of 100; <b>confidence</b> is how sure the bot is.</p>
     <p><b>The bet:</b> <span class="tag">EW</span> $5 win + $5 place when the place pays $2 or more, otherwise $10 win.</p>
     <p><b>2 minutes before the jump:</b> compare the win price with 5 minutes out. If it has drifted more than 30c, skip it. Otherwise back it.</p>
   </section>
@@ -86,7 +88,8 @@ ol{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
       const ew = isEW(r), s = status(r), skip = r.alert === 'Skip';
       const li = el('li', 'pick' + (ew && !skip ? ' ew' : '') + (r.result && !/not run/i.test(r.result) ? ' done' : ''));
       const who = el('div', 'who'); who.append(el('b', null, `#${r.tab_no} ${r.horse}`), el('span', null, r.race));
-      const gap = el('div', 'gap'); gap.append(el('b', null, '+' + Number(r.gap).toFixed(1)), el('span', null, 'pts clear'));
+      if (r.confidence) who.append(el('span', 'conf ' + r.confidence, r.confidence.charAt(0) + r.confidence.slice(1).toLowerCase() + ' confidence'));
+      const gap = el('div', 'gap'); gap.append(el('b', null, r.points != null ? String(Math.round(r.points)) : '—'), el('span', null, 'score · +' + Number(r.gap).toFixed(1)));
       const px = el('div', 'px'); px.append(el('b', null, money(r.price) + (ew && Number(r.place_price) ? ' / ' + money(r.place_price) : '')),
         el('span', 'bet', skip ? 'No bet' : ew ? 'Each-way $5 + $5' : '$10 win'));
       if (s) px.append(el('span', 'st ' + s[1], s[0]));
