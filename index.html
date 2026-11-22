@@ -242,6 +242,8 @@ window.dash = (() => {
   .rc-bar { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
   .btn { appearance: none; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: inherit; font-size: .8rem; letter-spacing: .05em;
     text-transform: uppercase; padding: .45rem .85rem; border-radius: .6rem; cursor: pointer; display: inline-flex; align-items: center; gap: .4rem; }
+  .share-row { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
+  .share-row h2 { margin: 0; }
   .btn.primary { background: var(--lime); border-color: var(--lime); color: #07080a; font-weight: 600; }
   .btn[aria-pressed="true"] { background: var(--lime); border-color: var(--lime); color: #07080a; font-weight: 600; }
   .rc-tabs { display: flex; gap: .35rem; overflow-x: auto; padding-bottom: .2rem; }
@@ -540,7 +542,7 @@ window.dash = (() => {
       <!-- PICKS -->
       <section class="rb-view" id="picks" data-view="picks" hidden>
         <article class="rb-card">
-          <h2>Clear picks</h2>
+          <div class="share-row"><h2>Clear picks</h2><button class="btn primary" id="btn-share" type="button">Share picks</button></div>
           <p class="note">Top-rated horse, 10+ points clear of the next. Bet = each-way $5 + $5 when the place pays $2+, otherwise $10 win (* = planned from the latest price; the 2-minute check makes it final). Units = 1 unit win bet at Sportsbet's final price, shown once the race is run (a Skip is no bet, so 0U).</p>
           <div class="tbl-wrap">
             <table id="tbl-picks" data-source="picks" data-row-key="race">
@@ -1071,6 +1073,31 @@ window.dash = (() => {
       list.append(card);
     });
   }
+
+  // Share picks: plain-text list for a text / WhatsApp (iPhone share sheet when available, else copy)
+  function picksText() {
+    const p = (rows('picks') || []).slice().sort((a, b) => (a.time < b.time ? -1 : 1));
+    if (!p.length) return '';
+    const d = new Date(p[0].date + 'T00:00:00Z').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+    const lines = [`⭐ CLEAR PICKS – ${d} (Brisbane times)`, ''];
+    p.forEach((r) => {
+      const b = betOf(r);
+      const res = past(r) && r.result ? ' – ' + (String(r.result).toUpperCase() === 'WON' ? 'WON' : r.pos ? ordinal(r.pos) : r.result) : '';
+      const call = r.alert === 'Skip' ? ' (SKIP)' : r.alert === 'Back it' ? ' (BACK IT)' : '';
+      lines.push(`${hm(r.time)}  ${r.race}  #${r.tab_no} ${r.horse}  ${priceTxt(r)}  ${b.t === 'Skip' ? 'no bet' : b.ew ? 'EW $5+$5' : '$10 WIN'}${call}${res}`);
+    });
+    lines.push('', 'Check the price 2 min before the jump: if it has drifted more than 30c since 5 min out, SKIP it.',
+      'EW = $5 win + $5 place when the place pays $2+, otherwise $10 win. Paper bets so far - unproven, bet only what you can afford to lose.');
+    return lines.join('\n');
+  }
+  document.getElementById('btn-share').addEventListener('click', async (e) => {
+    const btn = e.currentTarget, txt = picksText(), label = 'Share picks';
+    const say = (m) => { btn.textContent = m; setTimeout(() => { btn.textContent = label; }, 2000); };
+    if (!txt) { say('No picks yet'); return; }
+    if (navigator.share) { try { await navigator.share({ text: txt }); return; } catch (err) { if (err && err.name === 'AbortError') return; } }
+    try { await navigator.clipboard.writeText(txt); say('Copied ✓'); }
+    catch (err) { const t = document.createElement('textarea'); t.value = txt; document.body.append(t); t.select(); try { document.execCommand('copy'); say('Copied ✓'); } catch (e2) { say('Copy failed'); } t.remove(); }
+  });
 
   function drawPicksTable() {
     const tb = document.querySelector('#tbl-picks tbody'); tb.replaceChildren();
