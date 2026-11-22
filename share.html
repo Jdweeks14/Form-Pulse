@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Clear Picks</title>
+<meta name="description" content="Today's clear picks, with the bet and the 2-minute skip rule.">
+<meta property="og:title" content="Today's Clear Picks">
+<meta property="og:description" content="Today's clear picks, with the bet and the 2-minute skip rule. Updates through the day.">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Source+Sans+3:wght@400;600&display=swap">
+<script src="config.js"></script>
+<style>
+/* Layout: one race-day sheet - a header, the rules, then the picks in jump order */
+:root{--bg:#f3f5f0;--card:#ffffff;--fg:#17201a;--mute:#5d6a60;--line:#dde3db;--accent:#1f6b3a;--ew:#9a5b00;--ewbg:#fff4e0;
+--good:#1f7a3f;--goodbg:#e3f4e8;--bad:#b3261e;--badbg:#fbe6e4;
+--disp:"Barlow Condensed","Arial Narrow",sans-serif;--body:"Source Sans 3","Segoe UI",system-ui,sans-serif;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#111613;--card:#19201b;--fg:#e8eee9;--mute:#97a69b;--line:#2a332d;--accent:#6fcf8f;--ew:#f2b45c;--ewbg:#2b2316;
+--good:#7ddc9c;--goodbg:#173322;--bad:#ff8a80;--badbg:#3a1c1a;color-scheme:dark}}
+*{box-sizing:border-box}
+html{padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 var(--body)}
+.wrap{max-width:46rem;margin:0 auto;padding-inline:16px;padding-block:28px 48px;display:grid;gap:20px}
+h1{font:700 2.4rem/1 var(--disp);margin:0;letter-spacing:.01em;text-wrap:balance}
+.sub{color:var(--mute);margin:6px 0 0}
+.rules{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;display:grid;gap:6px}
+.rules h2{font:700 1.05rem/1 var(--disp);text-transform:uppercase;letter-spacing:.08em;margin:0 0 4px;color:var(--accent)}
+.rules p{margin:0}
+ol{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.pick{display:grid;grid-template-columns:4.2rem minmax(0,1fr) 4.6rem 8.6rem;gap:12px;align-items:center;padding:12px 4px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.pick.done{opacity:.72}
+.t{font:600 1.15rem/1 var(--disp);color:var(--mute)}
+.who b{display:block;font-weight:600}.who span,.gap span,.px span{display:block;color:var(--mute);font-size:.85rem}
+.gap b,.px b{font:600 1.15rem/1.1 var(--disp)}
+.px{text-align:right}
+.ew .bet{color:var(--ew);font-weight:600}
+.ew .px b{color:var(--ew)}
+.st{display:inline-block;margin-top:3px;padding:0 8px;border-radius:99px;font-size:.78rem;font-weight:600;letter-spacing:.03em}
+.st.won,.st.back{background:var(--goodbg);color:var(--good)}
+.st.lost,.st.skip{background:var(--badbg);color:var(--bad)}
+.st.plc{background:var(--ewbg);color:var(--ew)}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;background:var(--ewbg);color:var(--ew);font-weight:600}
+.fine{color:var(--mute);font-size:.88rem;margin:0}
+.msg{color:var(--mute);padding:24px 4px;margin:0}
+@media (max-width:560px){.pick{grid-template-columns:3.6rem minmax(0,1fr) auto;row-gap:2px}.gap{display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><h1 id="h">Clear Picks</h1><p class="sub" id="sub">Loading today's picks…</p></header>
+  <section class="rules"><h2>How to follow</h2>
+    <p><b>The pick:</b> the bot's top-rated horse, only when it's 10+ points clear of the next best in its race.</p>
+    <p><b>The bet:</b> <span class="tag">EW</span> $5 win + $5 place when the place pays $2 or more, otherwise $10 win.</p>
+    <p><b>2 minutes before the jump:</b> compare the win price with 5 minutes out. If it has drifted more than 30c, skip it. Otherwise back it.</p>
+  </section>
+  <ol id="list"></ol>
+  <p class="fine">Paper bets so far: about 40% of picks have won. That's a small sample and the system is unproven, so bet only what you're happy to lose. This page updates itself through the day.</p>
+</div>
+<script>
+(() => {
+  const cfg = window.RACEBOT || {};
+  const list = document.getElementById('list'), sub = document.getElementById('sub'), h = document.getElementById('h');
+  const money = (v) => (v == null || v === '' || isNaN(v)) ? '—' : '$' + Number(v).toFixed(2);
+  const hm = (t) => { if (!t) return ''; const [a, b] = t.split(':').map(Number); return `${((a + 11) % 12) + 1}:${String(b).padStart(2, '0')}${a < 12 ? 'am' : 'pm'}`; };
+  const ord = (n) => { n = Number(n); return n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th'); };
+  const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+  const isEW = (r) => (r.alert === 'Back it' && r.bet ? /EW|each/i.test(r.bet) : Number(r.place_price) >= 2);
+  function status(r) {
+    const res = String(r.result || '').toLowerCase();
+    if (res === 'won') return ['WON', 'won'];
+    if (res === 'placed') return [r.pos ? ord(r.pos) : 'Placed', 'plc'];
+    if (res === 'lost') return [r.pos ? ord(r.pos) : 'Lost', 'lost'];
+    if (r.alert === 'Skip') return ['SKIP', 'skip'];
+    if (r.alert === 'Back it') return ['BACK IT', 'back'];
+    return null;
+  }
+  function draw(p) {
+    list.replaceChildren();
+    if (!p.length) { list.append(el('p', 'msg', "No clear picks yet today. They're usually out by 9am Brisbane time.")); sub.textContent = ''; return; }
+    p.sort((a, b) => (a.time < b.time ? -1 : 1));
+    const d = new Date(p[0].date + 'T00:00:00Z');
+    h.textContent = 'Clear Picks · ' + d.toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'short', timeZone: 'UTC' });
+    sub.textContent = `${p.length} picks · times are Brisbane (AEST) · latest Sportsbet prices`;
+    p.forEach((r) => {
+      const ew = isEW(r), s = status(r), skip = r.alert === 'Skip';
+      const li = el('li', 'pick' + (ew && !skip ? ' ew' : '') + (r.result && !/not run/i.test(r.result) ? ' done' : ''));
+      const who = el('div', 'who'); who.append(el('b', null, `#${r.tab_no} ${r.horse}`), el('span', null, r.race));
+      const gap = el('div', 'gap'); gap.append(el('b', null, '+' + Number(r.gap).toFixed(1)), el('span', null, 'pts clear'));
+      const px = el('div', 'px'); px.append(el('b', null, money(r.price) + (ew && Number(r.place_price) ? ' / ' + money(r.place_price) : '')),
+        el('span', 'bet', skip ? 'No bet' : ew ? 'Each-way $5 + $5' : '$10 win'));
+      if (s) px.append(el('span', 'st ' + s[1], s[0]));
+      li.append(el('div', 't', hm(r.time)), who, gap, px);
+      list.append(li);
+    });
+  }
+  async function load() {
+    try {
+      const u = `${cfg.supabaseUrl}/rest/v1/snapshots?name=eq.share&select=data`;
+      const r = await fetch(u, { headers: { apikey: cfg.supabaseAnonKey, Authorization: 'Bearer ' + cfg.supabaseAnonKey } });
+      if (!r.ok) throw new Error(r.status);
+      const rows = await r.json();
+      draw(rows.length && Array.isArray(rows[0].data) ? rows[0].data : []);
+    } catch (e) { if (!list.children.length) sub.textContent = "Couldn't load the picks just now. Pull down to try again."; }
+  }
+  if (!cfg.supabaseUrl) { sub.textContent = 'This page is not set up yet.'; return; }
+  load(); setInterval(load, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+})();
+</script>
+</body>
+</html>
