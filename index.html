@@ -1074,29 +1074,13 @@ window.dash = (() => {
     });
   }
 
-  // Share picks: plain-text list for a text / WhatsApp (iPhone share sheet when available, else copy)
-  function picksText() {
-    const p = (rows('picks') || []).slice().sort((a, b) => (a.time < b.time ? -1 : 1));
-    if (!p.length) return '';
-    const d = new Date(p[0].date + 'T00:00:00Z').toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
-    const lines = [`⭐ CLEAR PICKS – ${d} (Brisbane times)`, ''];
-    p.forEach((r) => {
-      const b = betOf(r);
-      const res = past(r) && r.result ? ' – ' + (String(r.result).toUpperCase() === 'WON' ? 'WON' : r.pos ? ordinal(r.pos) : r.result) : '';
-      const call = r.alert === 'Skip' ? ' (SKIP)' : r.alert === 'Back it' ? ' (BACK IT)' : '';
-      lines.push(`${hm(r.time)}  ${r.race}  #${r.tab_no} ${r.horse}  ${priceTxt(r)}  ${b.t === 'Skip' ? 'no bet' : b.ew ? 'EW $5+$5' : '$10 WIN'}${call}${res}`);
-    });
-    lines.push('', 'Check the price 2 min before the jump: if it has drifted more than 30c since 5 min out, SKIP it.',
-      'EW = $5 win + $5 place when the place pays $2+, otherwise $10 win. Paper bets so far - unproven, bet only what you can afford to lose.');
-    return lines.join('\n');
-  }
+  // Share button sends the link to the public picks page (share.html - picks only, updates itself)
   document.getElementById('btn-share').addEventListener('click', async (e) => {
-    const btn = e.currentTarget, txt = picksText(), label = 'Share picks';
+    const btn = e.currentTarget, label = 'Share picks', url = new URL('share.html', location.href).href;
     const say = (m) => { btn.textContent = m; setTimeout(() => { btn.textContent = label; }, 2000); };
-    if (!txt) { say('No picks yet'); return; }
-    if (navigator.share) { try { await navigator.share({ text: txt }); return; } catch (err) { if (err && err.name === 'AbortError') return; } }
-    try { await navigator.clipboard.writeText(txt); say('Copied ✓'); }
-    catch (err) { const t = document.createElement('textarea'); t.value = txt; document.body.append(t); t.select(); try { document.execCommand('copy'); say('Copied ✓'); } catch (e2) { say('Copy failed'); } t.remove(); }
+    if (navigator.share) { try { await navigator.share({ title: "Today's clear picks", url }); return; } catch (err) { if (err && err.name === 'AbortError') return; } }
+    try { await navigator.clipboard.writeText(url); say('Link copied ✓'); }
+    catch (err) { const t = document.createElement('textarea'); t.value = url; document.body.append(t); t.select(); try { document.execCommand('copy'); say('Link copied ✓'); } catch (e2) { say(url); } t.remove(); }
   });
 
   function drawPicksTable() {
