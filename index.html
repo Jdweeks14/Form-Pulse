@@ -557,6 +557,16 @@ window.dash = (() => {
       <!-- RESULTS -->
       <section class="rb-view" id="results" data-view="results" hidden>
         <article class="rb-card">
+          <h2>Strategy test</h2>
+          <p class="note">Three ways of betting the same clear picks, tracked side by side (paper, Sportsbet final prices, skips not bet). <b>Test</b> = new races from 24 Nov, the fair comparison. <b>Before</b> = 11–23 Nov, the races these ideas came from.</p>
+          <div class="tbl-wrap">
+            <table id="tbl-strat">
+              <thead><tr><th>Strategy</th><th>Period</th><th class="n">Bets</th><th class="n">Won</th><th class="n">Top 3</th><th class="n">Profit</th><th class="n hn">Return</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </article>
+        <article class="rb-card">
           <h2>Clear picks by day</h2>
           <p class="note">From the bot's end-of-day results.</p>
           <div class="tbl-wrap" style="max-height:18rem">
@@ -651,6 +661,46 @@ window.dash = (() => {
     const ew = r.bet ? /EW|each/i.test(r.bet) : p >= 2;
     if (ew && p) return (won ? 5 * (w - 1) : -5) + (plc ? 5 * (p - 1) : -5);
     return won ? 10 * (w - 1) : -10;
+  }
+  // Strategy test (Josh 23 Nov): same non-skipped clear picks, three bet rules. Test period starts 24 Nov.
+  const TEST_FROM = '2026-11-24';
+  const STRATS = [
+    { name: 'Current rule', note: 'EW $5+$5 if place $2+, else $10 win', pl: (r) => paperPL(r) },
+    { name: 'Score 70+, under $8', note: 'current bets, only score 70+ and price $8 or less',
+      pl: (r) => { const px = Number(r.price_2min) || Number(r.final_price); return Number(r.points) >= 70 && px <= 8 ? paperPL(r) : undefined; } },
+    { name: 'Place only', note: '$10 place', pl: (r) => { const p = Number(r.final_place); if (!p || !Number(r.final_price)) return null; return r.result === 'Won' || r.result === 'Placed' ? 10 * (p - 1) : -10; } },
+  ];
+  dash.calc('strategies', {
+    title: 'Strategy test', description: 'Paper profit of three bet rules on the same non-skipped clear picks, before and after 24 Nov.',
+    inputs: ['history'],
+    fn: (history) => {
+      const base = history.filter((r) => r.clear === 'True' && r.alert !== 'Skip' && ['Won', 'Placed', 'Lost'].includes(r.result));
+      const out = [];
+      STRATS.forEach((st) => [['Test', (d) => d >= TEST_FROM], ['Before', (d) => d < TEST_FROM]].forEach(([per, ok]) => {
+        const rows = base.filter((r) => ok(r.date)).map((r) => ({ r, v: st.pl(r) })).filter((x) => x.v !== undefined && x.v !== null);
+        const pl = rows.reduce((a, x) => a + x.v, 0), n = rows.length;
+        const stake = st.name === 'Place only' ? 10 : 10;
+        out.push({ name: st.name, note: st.note, period: per, bets: n,
+          won: n ? Math.round(100 * rows.filter((x) => x.r.result === 'Won').length / n) : null,
+          top3: n ? Math.round(100 * rows.filter((x) => x.r.result !== 'Lost').length / n) : null,
+          profit: Math.round(pl), roi: n ? Math.round(100 * pl / (stake * n)) : null });
+      }));
+      return out;
+    }
+  });
+  function drawStrategies() {
+    const tb = document.querySelector('#tbl-strat tbody'); if (!tb) return; tb.replaceChildren();
+    const d = rows('strategies'); if (!d) return;
+    d.forEach((r) => {
+      const tr = el('tr', r.period === 'Before' ? 'past' : '');
+      const nm = td(r.period === 'Test' ? r.name : ''); if (r.period === 'Test') nm.title = r.note;
+      const money = (v) => (v < 0 ? '−$' : '+$') + Math.abs(v);
+      const pc = td(r.bets ? money(r.profit) : '–', 'n'); if (r.bets) pc.classList.add(r.profit >= 0 ? 'u-up' : 'u-dn');
+      tr.append(nm, td(r.period === 'Test' ? 'Test (24 Nov on)' : 'Before'), td(String(r.bets), 'n'),
+        td(r.won == null ? '–' : r.won + '%', 'n'), td(r.top3 == null ? '–' : r.top3 + '%', 'n'), pc,
+        td(r.roi == null ? '–' : (r.roi >= 0 ? '+' : '') + r.roi + '%', 'n hn'));
+      tb.append(tr);
+    });
   }
   dash.calc('perf', {
     title: 'Clear picks performance', description: 'Win and place rates of every clear pick since 23 Oct, profit of $10 win bets at Sportsbet\'s final price, and how Back it and Skip alerts did.',
@@ -1118,7 +1168,7 @@ window.dash = (() => {
     if (view === 'home') { drawTicker(); drawNext(); drawUpcoming(); drawFieldProb(); drawProfit(); drawRecordChart(); drawScore(); drawMeetings(); }
     if (view === 'cards') drawCards();
     if (view === 'picks') drawPicksTable();
-    if (view === 'results') drawResults();
+    if (view === 'results') { drawStrategies(); drawResults(); }
   }
   dash.onData(draw);
   setInterval(() => { if (view === 'home') { drawHeader(); drawTicker(); drawNext(); drawUpcoming(); drawFieldProb(); drawScore(); } }, 60000);
