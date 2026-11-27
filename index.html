@@ -543,7 +543,7 @@ window.dash = (() => {
       <section class="rb-view" id="picks" data-view="picks" hidden>
         <article class="rb-card">
           <div class="share-row"><h2>Clear picks</h2><button class="btn primary" id="btn-share" type="button">Share picks</button></div>
-          <p class="note">Top-rated horse, 15+ points clear of the next (10+ before 27 Nov). Bet = each-way $5 + $5 when the place pays $2+, otherwise $10 win (* = planned from the latest price; the 2-minute check makes it final). Units = 1 unit win bet at Sportsbet's final price, shown once the race is run (a Skip is no bet, so 0U).</p>
+          <p class="note">Top-rated horse, 15+ points clear of the next (10+ before 27 Nov). Bet = each-way $5 + $5 when the place pays $2+, otherwise $10 win (* = planned from the latest price; the 2-minute check makes it final). Units = the bet at Sportsbet's final price, shown once the race is run: each-way = ½U win + ½U place, so a 2nd or 3rd can still make money; a Skip is no bet, so 0U.</p>
           <div class="tbl-wrap">
             <table id="tbl-picks" data-source="picks" data-row-key="race">
               <thead><tr><th data-field="time">Time</th><th data-field="race">Race</th><th data-field="horse">Horse</th><th class="n" data-field="points">Score</th><th class="n" data-field="price">Price</th>
@@ -632,10 +632,28 @@ window.dash = (() => {
       return [{ picks: c.length, won: w, placed: p, win_txt: c.length ? Math.round(100 * w / c.length) + '%' : '0', place_txt: c.length ? Math.round(100 * p / c.length) + '%' : '0' }];
     }
   });
-  // 1 unit = level-stakes win bet at Sportsbet's final price: won -> price - 1, otherwise -1 (no price -> not counted)
-  // skipped picks (2-min check said SKIP) = no bet, so 0 units
+  // 1 unit = the bot's bet at Sportsbet's final price (no price -> not counted). Skipped picks = no bet, so 0 units.
+  // 27 Nov (Josh): each-way picks (place pays $2+) = 0.5U win + 0.5U place, so a 2nd/3rd at a good place price is a profit:
+  //   won -> 0.5(win-1) + 0.5(place-1); placed -> -0.5 + 0.5(place-1); lost -> -1.  Win bets: won -> win-1, else -1.
   function skipKeys(history) { const s = new Set(); (history || []).forEach((r) => { if (r.alert === 'Skip') s.add(r.date + '|' + r.race); }); return s; }
-  function unitsOf(r, skips) { const b = Number(r.bsp); if (!b) return null; if (skips && skips.has(r.date + '|' + r.race)) return 0; return Number(r.won) === 1 ? b - 1 : -1; }
+  let _hm = null, _hmSrc = null;
+  function histOf(r, hist) {                   // the pick's history row (final win/place price, bet type)
+    const h = hist || rows('history'); if (h !== _hmSrc) { _hmSrc = h; _hm = new Map(); (h || []).forEach((x) => _hm.set(x.date + '|' + x.race, x)); }
+    return _hm.get(r.date + '|' + r.race) || {};
+  }
+  function betUnits(won, placed, w, p, ew) {
+    if (!w) return null;
+    if (ew && p) return won ? 0.5 * (w - 1) + 0.5 * (p - 1) : placed ? -0.5 + 0.5 * (p - 1) : -1;
+    return won ? w - 1 : -1;
+  }
+  function unitsOf(r, skips, hist) {
+    if (skips && skips.has(r.date + '|' + r.race)) return Number(r.bsp) ? 0 : null;
+    const h = histOf(r, hist), w = Number(r.bsp) || Number(h.final_price), p = Number(h.final_place) || Number(h.place_price) || Number(r.place_price);
+    const ew = h.bet ? /EW|each/i.test(h.bet) : r.bet ? /EW|each/i.test(r.bet) : p >= 2;
+    const won = Number(r.won) === 1 || String(r.result).toUpperCase() === 'WON';
+    const placed = won || Number(r.placed) === 1 || /^placed$/i.test(String(r.result));
+    return betUnits(won, placed, w, p, ew);
+  }
   function unitsTxt(u) { if (u === null || u === undefined || isNaN(u)) return '–'; const v = Math.round(u * 100) / 100; return '(' + (v >= 0 ? '+' : '') + v + 'U)'; }
   function unitsTd(u) { const c = td(unitsTxt(u), 'n'); if (u !== null && !isNaN(u)) c.classList.add(u >= 0 ? 'u-up' : 'u-dn'); return c; }
   dash.calc('record_days', {
@@ -646,7 +664,7 @@ window.dash = (() => {
       results.filter((r) => r.clear === true && !sk.has(r.date + '|' + r.race)).forEach((r) => {
         const d = by[r.date] || (by[r.date] = { date: r.date, picks: 0, won: 0, placed: 0, units: 0 });
         d.picks += 1; d.won += Number(r.won) || 0; d.placed += Number(r.placed) || 0;
-        const u = unitsOf(r, sk); if (u !== null) d.units += u;
+        const u = unitsOf(r, sk, history); if (u !== null) d.units += u;
       });
       return Object.values(by).sort((a, b) => (a.date < b.date ? -1 : 1)).map((d) => ({ ...d, win_rate: Math.round(100 * d.won / d.picks) / 100 }));
     }
@@ -1141,7 +1159,7 @@ window.dash = (() => {
       const tr = el('tr', past(r) ? 'past' : '');
       tr.append(td(hm(r.time)), td(r.race), td(`#${r.tab_no} ${r.horse}`), td(String(Math.round(r.points)), 'n'), td(priceTxt(r), 'n'), td(pct(r.win_prob), 'n hn'),
         td(confPill(r.confidence)), td((() => { const b = betOf(r); return b.t + (b.planned && b.t !== 'Skip' ? '*' : ''); })(), 'hn'), td(resPill(r.result, r.pos)),
-        unitsTd(r.result ? (r.alert === 'Skip' && Number(r.bsp) ? 0 : unitsOf({ bsp: r.bsp, won: String(r.result).toUpperCase() === 'WON' ? 1 : 0 })) : null));
+        unitsTd(r.result && !/not run/i.test(r.result) ? (r.alert === 'Skip' ? (Number(r.bsp) ? 0 : null) : unitsOf({ ...r, bet: betOf(r).ew ? 'EW' : 'WIN' })) : null));
       tb.append(tr);
     });
   }
